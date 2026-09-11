@@ -81,9 +81,13 @@ exchange = Exchange(wallet, constants.MAINNET_API_URL, account_address=ACCOUNT_A
 def resolve_spot_coin():
     meta = info.spot_meta()
 
+    names = [market.get("name") for market in meta["universe"]]
+
     for market in meta["universe"]:
         if market.get("name") in ("UBTC/USDC", "BTC/USDC"):
             return market["name"]
+
+    print(f"DEBUG COPPIE SPOT DISPONIBILI | {names}", flush=True)
 
     raise RuntimeError("Coppia spot BTC/USDC (o UBTC/USDC) non trovata nei metadata Hyperliquid")
 
