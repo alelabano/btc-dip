@@ -221,17 +221,12 @@ from hyperliquid.utils.signing import float_to_wire
 import math
 
 def round_spot_price(price, is_buy):
-    # Il tick size per UBTC/USDC su Hyperliquid Spot richiede il passo di 0.1 (1 decimale)
-    # Per acquisti (BUY) arrotondiamo per difetto per rimanere aggressivi nei limiti ma sicuri.
-    # Per vendite (SELL) arrotondiamo per eccesso.
-    tick_size = 0.1
-    
     if is_buy:
-        rounded = math.floor(price / tick_size) * tick_size
+        # Per un BUY arrotonda per difetto all'intero più vicino
+        return float(math.floor(price))
     else:
-        rounded = math.ceil(price / tick_size) * tick_size
-        
-    return round(rounded, 1)
+        # Per un SELL arrotonda per eccesso all'intero più vicino
+        return float(math.ceil(price))
 
 
 # ============================================================
