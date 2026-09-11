@@ -23,6 +23,20 @@ ACCOUNT_ADDRESS = os.getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 
 TOP_N_COINS = int(os.getenv("TOP_N_COINS", "25"))
 
+# Stablecoin e token sintetici/tracker di asset TradFi (azioni, indici,
+# materie prime) esclusi dalla selezione: non hanno senso in una
+# strategia dip-buy/take-profit pensata per cripto volatili.
+EXCLUDED_BASES = set(
+    b.strip().upper()
+    for b in os.getenv(
+        "EXCLUDED_BASES",
+        "USDT,USDT0,USDC,DAI,FEUSD,USDE,FRAX,USDP,TUSD,PYUSD,GUSD,STABLE,"
+        "RUB,EURC,EURT,XSGD,"
+        "QQQ,GLD,SPY,SLV,TLT,IWM,DIA,USO,UUUSPX,UUSPX"
+    ).split(",")
+    if b.strip()
+)
+
 BUY_USD = float(os.getenv("BUY_USD", "10"))
 MAX_POSITION_USD = float(os.getenv("MAX_POSITION_USD", "200"))
 MAX_WEEKLY_BUYS = int(os.getenv("MAX_WEEKLY_BUYS", "10"))
@@ -169,6 +183,9 @@ def resolve_active_coins():
         base_name = base_token.get("name")
 
         if not base_name or base_name == "USDC":
+            continue
+
+        if base_name.upper() in EXCLUDED_BASES:
             continue
 
         volume = float(
