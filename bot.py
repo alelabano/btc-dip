@@ -1,1852 +1,1656 @@
-import json
-import os
-import sys
-import time
-from datetime import datetime, timezone
+importjson
+importos
+importsys
+importtime
+fromdatetimeimportdatetime,timezone
 
-from dotenv import load_dotenv
-from eth_account import Account
+fromdotenvimportload_dotenv
+frometh_accountimportAccount
 
-from hyperliquid.exchange import Exchange
-from hyperliquid.info import Info
-from hyperliquid.utils import constants
+fromhyperliquid.exchangeimportExchange
+fromhyperliquid.infoimportInfo
+fromhyperliquid.utilsimportconstants
 
 
-# ============================================================
-# CONFIGURAZIONE
-# ============================================================
+#============================================================
+#CONFIGURAZIONE
+#============================================================
 
 load_dotenv()
 
-COIN = "BTC"
-INTERVAL = "4h"
+PRIVATE_KEY=os.getenv("HYPERLIQUID_PRIVATE_KEY")
+ACCOUNT_ADDRESS=os.getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 
-PRIVATE_KEY = os.environ["HYPERLIQUID_PRIVATE_KEY"]
-ACCOUNT_ADDRESS = os.environ["HYPERLIQUID_ACCOUNT_ADDRESS"]
+#SPOTONLY
+SPOT_COIN="BTC/USDC"
 
-# Questi valori sono modificabili direttamente da Railway.
-BUY_USD = float(os.getenv("BUY_USD", "10"))
-MAX_POSITION_USD = float(os.getenv("MAX_POSITION_USD", "200"))
-MAX_WEEKLY_BUYS = int(os.getenv("MAX_WEEKLY_BUYS", "10"))
+BUY_USD=float(os.getenv("BUY_USD","10"))
+MAX_POSITION_USD=float(os.getenv("MAX_POSITION_USD","200"))
+MAX_WEEKLY_BUYS=int(os.getenv("MAX_WEEKLY_BUYS","10"))
 
-DIP_PERCENT = float(os.getenv("DIP_PERCENT", "2"))
-TAKE_PROFIT_PERCENT = float(
-    os.getenv("TAKE_PROFIT_PERCENT", "1")
+DIP_PERCENT=float(os.getenv("DIP_PERCENT","2"))
+TAKE_PROFIT_PERCENT=float(
+os.getenv("TAKE_PROFIT_PERCENT","4")
 )
 
-MAX_SLIPPAGE = float(
-    os.getenv("MAX_SLIPPAGE", "0.01")
+MAX_SLIPPAGE=float(
+os.getenv("MAX_SLIPPAGE","0.01")
 )
 
-MAX_LOTS_TO_SELL_PER_RUN = int(
-    os.getenv("MAX_LOTS_TO_SELL_PER_RUN", "1")
+MAX_LOTS_TO_SELL_PER_RUN=int(
+os.getenv("MAX_LOTS_TO_SELL_PER_RUN","1")
 )
 
-STATE_DIR = os.getenv("STATE_DIR", "/data")
-STATE_FILE = os.path.join(
-    STATE_DIR,
-    "state.json"
+STATE_DIR=os.getenv("STATE_DIR","/data")
+STATE_FILE=os.path.join(
+STATE_DIR,
+"state.json"
 )
 
-STARTUP_DELAY = int(
-    os.getenv("STARTUP_DELAY", "5")
+STARTUP_DELAY=int(
+os.getenv("STARTUP_DELAY","5")
 )
 
-POST_ORDER_DELAY = int(
-    os.getenv("POST_ORDER_DELAY", "3")
+POST_ORDER_DELAY=int(
+os.getenv("POST_ORDER_DELAY","3")
 )
 
-FILL_CHECK_ATTEMPTS = int(
-    os.getenv("FILL_CHECK_ATTEMPTS", "5")
+FILL_CHECK_ATTEMPTS=int(
+os.getenv("FILL_CHECK_ATTEMPTS","5")
 )
 
-FILL_CHECK_DELAY = float(
-    os.getenv("FILL_CHECK_DELAY", "1")
+FILL_CHECK_DELAY=float(
+os.getenv("FILL_CHECK_DELAY","1")
 )
 
-POSITION_TOLERANCE = float(
-    os.getenv("POSITION_TOLERANCE", "0.00000001")
-)
-
-
-# ============================================================
-# CONNESSIONE HYPERLIQUID
-# ============================================================
-
-wallet = Account.from_key(PRIVATE_KEY)
-
-info = Info(
-    constants.MAINNET_API_URL,
-    skip_ws=True,
-)
-
-exchange = Exchange(
-    wallet,
-    constants.MAINNET_API_URL,
-    account_address=ACCOUNT_ADDRESS,
+POSITION_TOLERANCE=float(
+os.getenv("POSITION_TOLERANCE","0.00000001")
 )
 
 
-# ============================================================
-# UTILITY
-# ============================================================
-
-def now_ms():
-    return int(time.time() * 1000)
-
-
-def utc_week_id():
-    now = datetime.now(timezone.utc)
-    year, week, _ = now.isocalendar()
-    return f"{year}-W{week:02d}"
-
-
-def log(message):
-    timestamp = datetime.now(timezone.utc).strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
-    print(
-        f"[{timestamp}] {message}",
-        flush=True
-    )
-
-
-def ensure_state_dir():
-    os.makedirs(
-        STATE_DIR,
-        exist_ok=True
-    )
-
-
-# ============================================================
-# STATE
-# ============================================================
-
-def default_state():
-    return {
-        "version": 3,
-
-        "performance_start_ms": now_ms(),
-
-        "last_processed_candle": None,
-
-        "week_id": utc_week_id(),
-        "weekly_buys": 0,
-
-        "next_lot_id": 1,
-
-        # Lotti ancora aperti
-        "lots": [],
-
-        # Storico completo delle vendite
-        "sell_trades": [],
-
-        "last_buy": None,
-        "last_sell": None,
-    }
-
-
-def load_state():
-    ensure_state_dir()
-
-    if not os.path.exists(STATE_FILE):
-        state = default_state()
-        save_state(state)
-        return state
-
-    with open(
-        STATE_FILE,
-        "r",
-        encoding="utf-8"
-    ) as f:
-        state = json.load(f)
-
-    state.setdefault("version", 3)
-    state.setdefault(
-        "performance_start_ms",
-        now_ms()
-    )
-    state.setdefault(
-        "last_processed_candle",
-        None
-    )
-    state.setdefault(
-        "week_id",
-        utc_week_id()
-    )
-    state.setdefault(
-        "weekly_buys",
-        0
-    )
-    state.setdefault(
-        "next_lot_id",
-        1
-    )
-    state.setdefault(
-        "lots",
-        []
-    )
-    state.setdefault(
-        "sell_trades",
-        []
-    )
-    state.setdefault(
-        "last_buy",
-        None
-    )
-    state.setdefault(
-        "last_sell",
-        None
-    )
+#============================================================
+#VALIDAZIONE
+#============================================================
 
-    return state
+ifnotPRIVATE_KEY:
+raiseRuntimeError(
+"HYPERLIQUID_PRIVATE_KEYmancante"
+)
 
+ifnotACCOUNT_ADDRESS:
+raiseRuntimeError(
+"HYPERLIQUID_ACCOUNT_ADDRESSmancante"
+)
 
-def save_state(state):
-    ensure_state_dir()
 
-    temp_file = STATE_FILE + ".tmp"
+#============================================================
+#CONNESSIONE
+#============================================================
 
-    with open(
-        temp_file,
-        "w",
-        encoding="utf-8"
-    ) as f:
-        json.dump(
-            state,
-            f,
-            indent=2,
-            ensure_ascii=False
-        )
+wallet=Account.from_key(
+PRIVATE_KEY
+)
 
-    os.replace(
-        temp_file,
-        STATE_FILE
-    )
+info=Info(
+constants.MAINNET_API_URL,
+skip_ws=True
+)
 
-
-# ============================================================
-# SETTIMANA
-# ============================================================
-
-def reset_week_if_needed(state):
-    current_week = utc_week_id()
+exchange=Exchange(
+wallet,
+constants.MAINNET_API_URL,
+account_address=ACCOUNT_ADDRESS
+)
 
-    if state["week_id"] != current_week:
-
-        state["week_id"] = current_week
-        state["weekly_buys"] = 0
-
-        save_state(state)
-
-        log(
-            f"Nuova settimana: {current_week}"
-        )
-
-
-# ============================================================
-# METADATA BTC
-# ============================================================
-
-def get_sz_decimals():
-    meta = info.meta()
-
-    for item in meta["universe"]:
-
-        if item["name"] == COIN:
-            return int(
-                item["szDecimals"]
-            )
-
-    raise RuntimeError(
-        f"{COIN} non trovato nei metadata Hyperliquid."
-    )
-
-
-SZ_DECIMALS = get_sz_decimals()
-
-
-def round_size(size):
-    return round(
-        float(size),
-        SZ_DECIMALS
-    )
-
-
-# ============================================================
-# CAPITALE / ACCOUNT
-# ============================================================
-
-def get_account_state():
-    """
-    Legge il capitale del conto Hyperliquid.
-
-    account_value  = valore totale del conto
-    withdrawable   = USDC disponibile/non impegnato
-    margin_used    = margine utilizzato
-    """
 
-    user_state = info.user_state(
-        ACCOUNT_ADDRESS
-    )
-    
-    log(f"ACCOUNT RAW | {user_state}")
+#============================================================
+#LOG
+#============================================================
 
-    margin_summary = user_state.get(
-        "marginSummary",
-        {}
-    )
-
-    cross_margin_summary = user_state.get(
-        "crossMarginSummary",
-        {}
-    )
-
-    account_value = float(
-        margin_summary.get(
-            "accountValue",
-            0
-        ) or 0
-    )
-
-    margin_used = float(
-        margin_summary.get(
-            "totalMarginUsed",
-            0
-        ) or 0
-    )
-
-    # withdrawable è al livello principale
-    # della risposta clearinghouseState.
-    withdrawable_raw = user_state.get(
-        "withdrawable"
-    )
-
-    if withdrawable_raw is None:
-        withdrawable_raw = cross_margin_summary.get(
-            "withdrawable"
-        )
-
-    available_usdc = float(
-        withdrawable_raw or 0
-    )
-
-    log(
-        f"ACCOUNT DEBUG | "
-        f"accountValue={account_value} | "
-        f"withdrawable={available_usdc} | "
-        f"marginUsed={margin_used}"
-    )
+deflog(message):
+now=datetime.now(
+timezone.utc
+).strftime(
+"%Y-%m-%d%H:%M:%SUTC"
+)
 
-    return {
-        "account_value": account_value,
-        "available_usdc": available_usdc,
-        "margin_used": margin_used,
-    }
+print(
+f"[{now}]{message}",
+flush=True
+)
 
-def log_capital():
-    account = get_account_state()
-    position = get_real_position()
 
-    log(
-        "CAPITALE | "
-        f"disponibile ${account['available_usdc']:.2f} | "
-        f"account ${account['account_value']:.2f} | "
-        f"margine ${account['margin_used']:.2f} | "
-        f"posizione BTC ${position['position_value']:.2f}"
-    )
-
-    return account
-
-
-# ============================================================
-# PREZZO
-# ============================================================
-
-def get_mid_price():
-    mids = info.all_mids()
-
-    if COIN not in mids:
-        raise RuntimeError(
-            f"Prezzo {COIN} non disponibile."
-        )
-
-    return float(
-        mids[COIN]
-    )
-
+#============================================================
+#STATE
+#============================================================
 
-# ============================================================
-# CANDELE 4H
-# ============================================================
-
-def get_last_two_closed_candles():
+defdefault_state():
 
-    current_ms = now_ms()
+return{
+"version":5,
 
-    start_ms = (
-        current_ms
-        - (4 * 60 * 60 * 1000 * 6)
-    )
+"performance_start_ms":int(
+datetime.now(
+timezone.utc
+).timestamp()*1000
+),
 
-    candles = info.candles_snapshot(
-        COIN,
-        INTERVAL,
-        start_ms,
-        current_ms
-    )
+"last_processed_candle":None,
 
-    closed = [
-        candle
-        for candle in candles
-        if int(candle["T"]) <= current_ms
-    ]
+"week_id":None,
+"weekly_buys":0,
 
-    if len(closed) < 2:
-        raise RuntimeError(
-            "Non ci sono almeno due candele 4H chiuse."
-        )
+"next_lot_id":1,
 
-    closed.sort(
-        key=lambda x: int(x["T"])
-    )
-
-    return (
-        closed[-2],
-        closed[-1]
-    )
+"open_lots":[],
+"sell_trades":[],
 
+"last_buy":None,
+"last_sell":None
+}
 
-# ============================================================
-# POSIZIONE REALE
-# ============================================================
 
-def get_real_position():
+defload_state():
 
-    user_state = info.user_state(
-        ACCOUNT_ADDRESS
-    )
+os.makedirs(
+STATE_DIR,
+exist_ok=True
+)
 
-    for item in user_state.get(
-        "assetPositions",
-        []
-    ):
-
-        position = item["position"]
-
-        if position["coin"] == COIN:
-
-            size = float(
-                position["szi"]
-            )
-
-            entry_px = position.get(
-                "entryPx"
-            )
-
-            return {
-                "size": size,
-
-                "entry_price": (
-                    float(entry_px)
-                    if entry_px not in (
-                        None,
-                        "None"
-                    )
-                    else 0.0
-                ),
-
-                "position_value": float(
-                    position["positionValue"]
-                ),
-
-                "unrealized_pnl": float(
-                    position["unrealizedPnl"]
-                ),
-            }
-
-    return {
-        "size": 0.0,
-        "entry_price": 0.0,
-        "position_value": 0.0,
-        "unrealized_pnl": 0.0,
-    }
-
-
-def local_lots_size(state):
-
-    return sum(
-        float(lot["remaining_size"])
-        for lot in state["lots"]
-    )
-
-
-def verify_position_consistency(state):
-
-    real = get_real_position()
-
-    real_size = real["size"]
-    local_size = local_lots_size(state)
-
-    # Il bot deve gestire soltanto una posizione LONG.
-    if real_size < -POSITION_TOLERANCE:
-
-        raise RuntimeError(
-            f"POSIZIONE SHORT RILEVATA: "
-            f"{real_size} BTC. BOT BLOCCATO."
-        )
-
-    if (
-        abs(
-            real_size
-            - local_size
-        )
-        > POSITION_TOLERANCE
-    ):
-
-        raise RuntimeError(
-            "DISALLINEAMENTO POSIZIONE!\n"
-            f"Hyperliquid: {real_size} BTC\n"
-            f"Lotti locali: {local_size} BTC\n"
-            "NESSUNA OPERAZIONE ESEGUITA."
-        )
-
-    return real
-
-
-# ============================================================
-# ORDINI / FILL
-# ============================================================
-
-def extract_filled_order(order_result):
-
-    if not isinstance(
-        order_result,
-        dict
-    ):
-        raise RuntimeError(
-            f"Risposta ordine non valida: "
-            f"{order_result}"
-        )
-
-    if order_result.get(
-        "status"
-    ) != "ok":
-
-        raise RuntimeError(
-            f"Ordine rifiutato: "
-            f"{order_result}"
-        )
-
-    response = order_result.get(
-        "response",
-        {}
-    )
-
-    data = response.get(
-        "data",
-        {}
-    )
-
-    statuses = data.get(
-        "statuses",
-        []
-    )
-
-    for status in statuses:
-
-        if "filled" in status:
-
-            filled = status["filled"]
-
-            return {
-                "oid": int(
-                    filled["oid"]
-                ),
-
-                "size": float(
-                    filled["totalSz"]
-                ),
-
-                "avg_price": float(
-                    filled["avgPx"]
-                ),
-            }
-
-        if "error" in status:
-
-            raise RuntimeError(
-                f"Ordine non eseguito: "
-                f"{status['error']}"
-            )
-
-    raise RuntimeError(
-        f"Ordine senza fill: "
-        f"{order_result}"
-    )
-
-
-# ============================================================
-# COMMISSIONI
-# ============================================================
-
-def estimate_fee(
-    notional
+ifnotos.path.exists(
+STATE_FILE
 ):
-    """
-    L'API corrente dei fill non espone la fee
-    direttamente nel record del fill.
-    Usiamo quindi il userCrossRate come stima
-    della fee taker.
-    """
+returndefault_state()
 
-    try:
+withopen(
+STATE_FILE,
+"r"
+)asf:
 
-        fees = info.user_fees(
-            ACCOUNT_ADDRESS
-        )
+state=json.load(f)
 
-        cross_rate = float(
-            fees["userCrossRate"]
-        )
+base=default_state()
+base.update(state)
 
-        return (
-            float(notional)
-            * cross_rate
-        )
-
-    except Exception as exc:
-
-        log(
-            f"Avviso calcolo commissione: "
-            f"{exc}"
-        )
-
-        return 0.0
+returnbase
 
 
-# ============================================================
-# WAIT POSIZIONE
-# ============================================================
+defsave_state(state):
 
-def wait_for_position_size(
-    expected_size
+os.makedirs(
+STATE_DIR,
+exist_ok=True
+)
+
+tmp_file=(
+STATE_FILE+".tmp"
+)
+
+withopen(
+tmp_file,
+"w"
+)asf:
+
+json.dump(
+state,
+f,
+indent=2
+)
+
+os.replace(
+tmp_file,
+STATE_FILE
+)
+
+
+#============================================================
+#SETTIMANA
+#============================================================
+
+defcurrent_week_id():
+
+now=datetime.now(
+timezone.utc
+)
+
+iso=now.isocalendar()
+
+return(
+f"{iso.year}-W{iso.week:02d}"
+)
+
+
+defrefresh_week(state):
+
+week_id=current_week_id()
+
+ifstate.get("week_id")!=week_id:
+
+state["week_id"]=week_id
+state["weekly_buys"]=0
+
+save_state(state)
+
+
+#============================================================
+#SPOTMETADATA
+#============================================================
+
+defget_spot_decimals():
+
+meta=info.spot_meta()
+
+fortokeninmeta["tokens"]:
+
+iftoken["name"]=="BTC":
+
+returnint(
+token["szDecimals"]
+)
+
+raiseRuntimeError(
+"BTCnontrovatoneimetadataSpot"
+)
+
+
+defround_btc(size):
+
+decimals=get_spot_decimals()
+
+returnround(
+float(size),
+decimals
+)
+
+
+#============================================================
+#SALDISPOT
+#============================================================
+
+defget_spot_balances():
+
+data=info.spot_user_state(
+ACCOUNT_ADDRESS
+)
+
+usdc_total=0.0
+usdc_hold=0.0
+
+btc_total=0.0
+btc_hold=0.0
+
+forbalanceindata.get(
+"balances",
+[]
 ):
 
-    for _ in range(
-        FILL_CHECK_ATTEMPTS
-    ):
+coin=balance.get(
+"coin"
+)
 
-        position = get_real_position()
+total=float(
+balance.get(
+"total",
+0
+)or0
+)
 
-        if (
-            abs(
-                position["size"]
-                - expected_size
-            )
-            <= POSITION_TOLERANCE
-        ):
+hold=float(
+balance.get(
+"hold",
+0
+)or0
+)
 
-            return position
+ifcoin=="USDC":
 
-        time.sleep(
-            FILL_CHECK_DELAY
-        )
+usdc_total=total
+usdc_hold=hold
 
-    raise RuntimeError(
-        "La posizione reale non corrisponde "
-        "a quella attesa dopo l'ordine."
-    )
+elifcoin=="BTC":
 
+btc_total=total
+btc_hold=hold
 
-# ============================================================
-# BUY
-# ============================================================
+return{
+"usdc_total":usdc_total,
+"usdc_available":max(
+0.0,
+usdc_total-usdc_hold
+),
 
-def place_buy(state):
+"btc_total":btc_total,
+"btc_available":max(
+0.0,
+btc_total-btc_hold
+)
+}
 
-    # Posizione PRIMA dell'ordine.
-    real_before = get_real_position()
 
-    if real_before["size"] < -POSITION_TOLERANCE:
+#============================================================
+#PREZZOSPOT
+#============================================================
 
-        raise RuntimeError(
-            "Posizione SHORT: BUY bloccato."
-        )
+defget_spot_price():
 
-    current_price = get_mid_price()
+data=info.spot_meta_and_asset_ctxs()
 
-    current_position_value = (
-        abs(real_before["size"])
-        * current_price
-    )
+meta=data[0]
+contexts=data[1]
 
-    # --------------------------------------------------------
-    # LIMITE POSIZIONE
-    # --------------------------------------------------------
-
-    if (
-        current_position_value
-        + BUY_USD
-        > MAX_POSITION_USD
-    ):
-
-        log(
-            "BUY BLOCCATO | "
-            f"posizione ${current_position_value:.2f} + "
-            f"BUY ${BUY_USD:.2f} > "
-            f"limite ${MAX_POSITION_USD:.2f}"
-        )
-
-        return False
-
-    # --------------------------------------------------------
-    # LIMITE BUY SETTIMANALI
-    # --------------------------------------------------------
-
-    if (
-        state["weekly_buys"]
-        >= MAX_WEEKLY_BUYS
-    ):
-
-        log(
-            "BUY BLOCCATO | "
-            f"raggiunti {MAX_WEEKLY_BUYS} "
-            "BUY settimanali"
-        )
-
-        return False
-
-    # --------------------------------------------------------
-    # CAPITALE DISPONIBILE
-    # --------------------------------------------------------
-
-    account = get_account_state()
-
-    if (
-        account["available_usdc"]
-        < BUY_USD
-    ):
-
-        log(
-            "BUY BLOCCATO | "
-            f"capitale disponibile "
-            f"${account['available_usdc']:.2f} "
-            f"< BUY ${BUY_USD:.2f}"
-        )
-
-        return False
-
-    # --------------------------------------------------------
-    # QUANTITÀ
-    # --------------------------------------------------------
-
-    size = (
-        BUY_USD
-        / current_price
-    )
-
-    size = round_size(
-        size
-    )
-
-    if size <= 0:
-
-        raise RuntimeError(
-            "Quantità BUY arrotondata a zero."
-        )
-
-    log(
-        f"BUY | "
-        f"{size:.8f} BTC | "
-        f"valore circa ${BUY_USD:.2f} | "
-        f"prezzo ${current_price:.2f}"
-    )
-
-    # --------------------------------------------------------
-    # ORDINE
-    # --------------------------------------------------------
-
-    order_result = exchange.market_open(
-        COIN,
-        True,
-        size,
-        None,
-        MAX_SLIPPAGE
-    )
-
-    fill = extract_filled_order(
-        order_result
-    )
-
-    time.sleep(
-        POST_ORDER_DELAY
-    )
-
-    # IMPORTANTE:
-    # expected_size parte dalla posizione PRIMA del BUY.
-    expected_size = (
-        real_before["size"]
-        + fill["size"]
-    )
-
-    wait_for_position_size(
-        expected_size
-    )
-
-    # --------------------------------------------------------
-    # LOTTO
-    # --------------------------------------------------------
-
-    buy_notional = (
-        fill["size"]
-        * fill["avg_price"]
-    )
-
-    buy_fee = estimate_fee(
-        buy_notional
-    )
-
-    lot_id = state[
-        "next_lot_id"
-    ]
-
-    state[
-        "next_lot_id"
-    ] += 1
-
-    lot = {
-
-        "lot_id": lot_id,
-
-        "created_at_ms": now_ms(),
-
-        "buy_oid": fill["oid"],
-
-        "buy_size": fill["size"],
-
-        "remaining_size": fill["size"],
-
-        "buy_price": fill["avg_price"],
-
-        "buy_notional": buy_notional,
-
-        "buy_fee_est": buy_fee,
-
-        "sold_size": 0.0,
-
-        "sold_notional": 0.0,
-
-        "realized_gross_pnl": 0.0,
-
-        "realized_net_pnl": 0.0,
-    }
-
-    state["lots"].append(
-        lot
-    )
-
-    state["weekly_buys"] += 1
-
-    state["last_buy"] = {
-
-        "time_ms": now_ms(),
-
-        "oid": fill["oid"],
-
-        "size": fill["size"],
-
-        "price": fill["avg_price"],
-
-        "notional": buy_notional,
-
-        "fee_est": buy_fee,
-
-        "lot_id": lot_id,
-    }
-
-    save_state(state)
-
-    log(
-        f"BUY ESEGUITO | "
-        f"lotto #{lot_id} | "
-        f"{fill['size']:.8f} BTC @ "
-        f"${fill['avg_price']:.2f} | "
-        f"fee stimata ${buy_fee:.6f}"
-    )
-
-    return True
-
-
-# ============================================================
-# LOTTI VENDIBILI
-# ============================================================
-
-def get_sellable_lots(
-    state,
-    current_price
+fori,marketinenumerate(
+meta["universe"]
 ):
 
-    eligible = []
+base_idx=market["tokens"][0]
+quote_idx=market["tokens"][1]
 
-    target_multiplier = (
-        1
-        + TAKE_PROFIT_PERCENT / 100
-    )
+base=meta["tokens"][base_idx]["name"]
+quote=meta["tokens"][quote_idx]["name"]
 
-    for lot in state["lots"]:
-
-        remaining = float(
-            lot["remaining_size"]
-        )
-
-        buy_price = float(
-            lot["buy_price"]
-        )
-
-        target_price = (
-            buy_price
-            * target_multiplier
-        )
-
-        if (
-            remaining
-            > POSITION_TOLERANCE
-            and current_price
-            >= target_price
-        ):
-
-            eligible.append(
-                {
-                    "lot": lot,
-                    "target_price": target_price,
-                }
-            )
-
-    # FIFO
-    eligible.sort(
-        key=lambda x:
-        int(
-            x["lot"]["lot_id"]
-        )
-    )
-
-    return eligible
-
-
-# ============================================================
-# SELL SINGOLO LOTTO
-# ============================================================
-
-def sell_lot(
-    state,
-    lot,
-    current_price
+if(
+base=="BTC"
+andquote=="USDC"
 ):
 
-    lot_id = int(
-        lot["lot_id"]
-    )
+mid=contexts[i].get(
+"midPx"
+)
 
-    original_remaining = float(
-        lot["remaining_size"]
-    )
+ifmidisNone:
+raiseRuntimeError(
+"PrezzoBTC/USDCnondisponibile"
+)
 
-    if (
-        original_remaining
-        <= POSITION_TOLERANCE
-    ):
-        return False
+returnfloat(mid)
 
-    real_before = get_real_position()
-
-    if (
-        real_before["size"]
-        <= POSITION_TOLERANCE
-    ):
-
-        raise RuntimeError(
-            "Nessuna posizione reale disponibile "
-            "per vendere il lotto."
-        )
-
-    # Mai vendere più della posizione reale.
-    sell_size = min(
-        original_remaining,
-        real_before["size"]
-    )
-
-    sell_size = round_size(
-        sell_size
-    )
-
-    if sell_size <= 0:
-
-        raise RuntimeError(
-            "SELL size arrotondata a zero."
-        )
-
-    buy_price = float(
-        lot["buy_price"]
-    )
-
-    target_price = (
-        buy_price
-        * (
-            1
-            + TAKE_PROFIT_PERCENT / 100
-        )
-    )
-
-    log(
-        f"SELL | lotto #{lot_id} | "
-        f"{sell_size:.8f} BTC | "
-        f"prezzo ${current_price:.2f} | "
-        f"target ${target_price:.2f}"
-    )
-
-    # --------------------------------------------------------
-    # SELL REDUCE-ONLY
-    # --------------------------------------------------------
-
-    order_result = exchange.market_close(
-        COIN,
-        sell_size,
-        None,
-        MAX_SLIPPAGE
-    )
-
-    fill = extract_filled_order(
-        order_result
-    )
-
-    time.sleep(
-        POST_ORDER_DELAY
-    )
-
-    expected_size = (
-        real_before["size"]
-        - fill["size"]
-    )
-
-    wait_for_position_size(
-        expected_size
-    )
-
-    # --------------------------------------------------------
-    # RISULTATO
-    # --------------------------------------------------------
-
-    sold_size = fill[
-        "size"
-    ]
-
-    sell_price = fill[
-        "avg_price"
-    ]
-
-    sell_notional = (
-        sold_size
-        * sell_price
-    )
-
-    buy_cost_allocated = (
-        sold_size
-        * buy_price
-    )
-
-    original_buy_size = float(
-        lot["buy_size"]
-    )
-
-    if original_buy_size > 0:
-
-        buy_fee_allocated = (
-            float(
-                lot["buy_fee_est"]
-            )
-            * sold_size
-            / original_buy_size
-        )
-
-    else:
-
-        buy_fee_allocated = 0.0
-
-    sell_fee = estimate_fee(
-        sell_notional
-    )
-
-    gross_pnl = (
-        sell_notional
-        - buy_cost_allocated
-    )
-
-    net_pnl = (
-        gross_pnl
-        - buy_fee_allocated
-        - sell_fee
-    )
-
-    # --------------------------------------------------------
-    # AGGIORNA LOTTO
-    # --------------------------------------------------------
-
-    lot["remaining_size"] = max(
-        0.0,
-        original_remaining
-        - sold_size
-    )
-
-    lot["sold_size"] = (
-        float(
-            lot["sold_size"]
-        )
-        + sold_size
-    )
-
-    lot["sold_notional"] = (
-        float(
-            lot["sold_notional"]
-        )
-        + sell_notional
-    )
-
-    lot["realized_gross_pnl"] = (
-        float(
-            lot["realized_gross_pnl"]
-        )
-        + gross_pnl
-    )
-
-    lot["realized_net_pnl"] = (
-        float(
-            lot["realized_net_pnl"]
-        )
-        + net_pnl
-    )
-
-    # --------------------------------------------------------
-    # STORICO
-    # --------------------------------------------------------
-
-    sell_trade = {
-
-        "time_ms": now_ms(),
-
-        "lot_id": lot_id,
-
-        "sell_oid": fill["oid"],
-
-        "size": sold_size,
-
-        "buy_price": buy_price,
-
-        "sell_price": sell_price,
-
-        "buy_cost_allocated":
-            buy_cost_allocated,
-
-        "sell_notional":
-            sell_notional,
-
-        "buy_fee_allocated_est":
-            buy_fee_allocated,
-
-        "sell_fee_est":
-            sell_fee,
-
-        "gross_pnl":
-            gross_pnl,
-
-        "net_pnl":
-            net_pnl,
-
-        "return_percent":
-            (
-                net_pnl
-                / buy_cost_allocated
-                * 100
-                if buy_cost_allocated > 0
-                else 0.0
-            ),
-    }
-
-    state[
-        "sell_trades"
-    ].append(
-        sell_trade
-    )
-
-    # Se completamente venduto,
-    # il lotto esce dalla lista aperta.
-    if (
-        lot["remaining_size"]
-        <= POSITION_TOLERANCE
-    ):
-
-        state["lots"] = [
-            item
-            for item in state["lots"]
-            if int(
-                item["lot_id"]
-            ) != lot_id
-        ]
-
-    state["last_sell"] = (
-        sell_trade
-    )
-
-    save_state(state)
-
-    log(
-        f"SELL ESEGUITO | "
-        f"lotto #{lot_id} | "
-        f"{sold_size:.8f} BTC @ "
-        f"${sell_price:.2f} | "
-        f"PnL lordo ${gross_pnl:.4f} | "
-        f"PnL netto ${net_pnl:.4f}"
-    )
-
-    return True
+raiseRuntimeError(
+"MercatoBTC/USDCSpotnontrovato"
+)
 
 
-# ============================================================
-# SELL CHECK
-# ============================================================
+#============================================================
+#ORDINESPOTAGGRESSIVOIOC
+#============================================================
 
-def check_sell(
-    state,
-    current_price
+defget_spot_execution_price(
+is_buy,
+slippage
 ):
 
-    eligible = get_sellable_lots(
-        state,
-        current_price
-    )
+book=info.l2_snapshot(
+SPOT_COIN
+)
 
-    if not eligible:
-        return False
+levels=book.get(
+"levels",
+[]
+)
 
-    sold_any = False
+iflen(levels)<2:
+raiseRuntimeError(
+"OrderbookBTC/USDCnondisponibile"
+)
 
-    for item in eligible[
-        :MAX_LOTS_TO_SELL_PER_RUN
-    ]:
+bids=levels[0]
+asks=levels[1]
 
-        sell_lot(
-            state,
-            item["lot"],
-            current_price
-        )
+ifis_buy:
 
-        sold_any = True
+ifnotasks:
+raiseRuntimeError(
+"AskBTC/USDCnondisponibile"
+)
 
-    return sold_any
+best_ask=float(
+asks[0]["px"]
+)
+
+return(
+best_ask
+*(1+slippage)
+)
+
+else:
+
+ifnotbids:
+raiseRuntimeError(
+"BidBTC/USDCnondisponibile"
+)
+
+best_bid=float(
+bids[0]["px"]
+)
+
+return(
+best_bid
+*(1-slippage)
+)
 
 
-# ============================================================
-# BUY CHECK
-# ============================================================
-
-def check_buy(
-    state,
-    previous_candle,
-    latest_candle
+defspot_market_order(
+is_buy,
+size
 ):
 
-    previous_close = float(
-        previous_candle["c"]
-    )
+price=get_spot_execution_price(
+is_buy,
+MAX_SLIPPAGE
+)
 
-    latest_close = float(
-        latest_candle["c"]
-    )
+#prezzoconprecisionesufficiente
+price=float(
+f"{price:.8f}"
+)
 
-    change_percent = (
-        (
-            latest_close
-            - previous_close
-        )
-        / previous_close
-        * 100
-    )
+log(
+f"ORDINESPOT|"
+f"{'BUY'ifis_buyelse'SELL'}|"
+f"{size:.8f}BTC|"
+f"limiteaggressivo${price:.2f}"
+)
 
-    dip = -change_percent
+result=exchange.order(
+SPOT_COIN,
+is_buy,
+size,
+price,
+{
+"limit":{
+"tif":"Ioc"
+}
+}
+)
 
-    log(
-        f"4H | "
-        f"precedente ${previous_close:.2f} -> "
-        f"ultima ${latest_close:.2f} | "
-        f"variazione {change_percent:.2f}%"
-    )
+log(
+f"ORDINESPOTRISPOSTA|{result}"
+)
 
-    if dip < DIP_PERCENT:
-
-        log(
-            f"Nessun BUY | "
-            f"dip {dip:.2f}% < "
-            f"{DIP_PERCENT:.2f}%"
-        )
-
-        return False
-
-    log(
-        f"CONDIZIONE BUY | "
-        f"dip {dip:.2f}% >= "
-        f"{DIP_PERCENT:.2f}%"
-    )
-
-    return place_buy(
-        state
-    )
+returnresult
 
 
-# ============================================================
-# FUNDING
-# ============================================================
+#============================================================
+#FILLSSPOT
+#============================================================
 
-def get_funding_pnl(state):
-
-    start_ms = int(
-        state.get(
-            "performance_start_ms",
-            now_ms()
-        )
-    )
-
-    try:
-
-        funding = (
-            info.user_funding_history(
-                ACCOUNT_ADDRESS,
-                start_ms,
-                now_ms()
-            )
-        )
-
-        total = 0.0
-
-        for item in funding:
-
-            delta = item.get(
-                "delta",
-                {}
-            )
-
-            # Supporta le risposte in cui
-            # il valore USDC è nel delta.
-            if (
-                delta.get("coin")
-                == "USDC"
-            ):
-
-                total += float(
-                    delta.get(
-                        "usdc",
-                        0
-                    )
-                )
-
-        return total
-
-    except Exception as exc:
-
-        log(
-            f"Avviso lettura funding: "
-            f"{exc}"
-        )
-
-        return 0.0
-
-
-# ============================================================
-# PERFORMANCE
-# ============================================================
-
-def calculate_performance(
-    state
+defget_spot_fills_since(
+start_ms
 ):
 
-    current_price = (
-        get_mid_price()
-    )
+end_ms=int(
+datetime.now(
+timezone.utc
+).timestamp()*1000
+)
 
-    # --------------------------------------------------------
-    # STORICO COMPLETO
-    # --------------------------------------------------------
+fills=info.user_fills_by_time(
+ACCOUNT_ADDRESS,
+start_ms,
+end_ms
+)
 
-    total_buy_notional = 0.0
-    total_buy_fees = 0.0
+result=[]
 
-    total_sell_notional = 0.0
-    total_sell_fees = 0.0
+forfillinfills:
 
-    realized_gross = 0.0
-    realized_net = 0.0
+coin=fill.get(
+"coin"
+)
 
-    # --------------------------------------------------------
-    # LOTTI APERTI
-    # --------------------------------------------------------
+ifcoinin(
+SPOT_COIN,
+"BTC/USDC"
+):
 
-    open_size = 0.0
-    open_cost = 0.0
-    open_buy_fees = 0.0
+result.append(fill)
 
-    for lot in state["lots"]:
+returnresult
 
-        buy_notional = float(
-            lot["buy_notional"]
-        )
 
-        buy_fee = float(
-            lot["buy_fee_est"]
-        )
+defcalculate_fill(
+fills,
+is_buy
+):
 
-        total_buy_notional += (
-            buy_notional
-        )
+selected=[]
 
-        total_buy_fees += (
-            buy_fee
-        )
+forfillinfills:
 
-        remaining = float(
-            lot["remaining_size"]
-        )
+side=fill.get(
+"side"
+)
 
-        buy_price = float(
-            lot["buy_price"]
-        )
+ifis_buyandside=="B":
+selected.append(fill)
 
-        open_size += remaining
+elifnotis_buyandside=="A":
+selected.append(fill)
 
-        open_cost += (
-            remaining
-            * buy_price
-        )
-
-        if float(
-            lot["buy_size"]
-        ) > 0:
-
-            open_buy_fees += (
-                buy_fee
-                * remaining
-                / float(
-                    lot["buy_size"]
-                )
-            )
-
-    # --------------------------------------------------------
-    # LOTTI CHIUSI / VENDITE
-    # --------------------------------------------------------
-
-    for trade in state[
-        "sell_trades"
-    ]:
-
-        total_sell_notional += float(
-            trade["sell_notional"]
-        )
-
-        total_sell_fees += float(
-            trade["sell_fee_est"]
-        )
-
-        realized_gross += float(
-            trade["gross_pnl"]
-        )
-
-        realized_net += float(
-            trade["net_pnl"]
-        )
-
-        # Il costo BUY della parte venduta
-        # era già contabilizzato nel trade.
-        total_buy_notional += 0.0
-
-    # --------------------------------------------------------
-    # UNREALIZED
-    # --------------------------------------------------------
-
-    unrealized_gross = 0.0
-
-    for lot in state["lots"]:
-
-        remaining = float(
-            lot["remaining_size"]
-        )
-
-        buy_price = float(
-            lot["buy_price"]
-        )
-
-        unrealized_gross += (
-            current_price
-            - buy_price
-        ) * remaining
-
-    # --------------------------------------------------------
-    # MEDIA PESATA POSIZIONE
-    # --------------------------------------------------------
-
-    weighted_avg_open_price = (
-        open_cost / open_size
-        if open_size > 0
-        else 0.0
-    )
-
-    # --------------------------------------------------------
-    # FEE USCITA STIMATA
-    # --------------------------------------------------------
-
-    estimated_exit_fee = 0.0
-
-    if open_size > 0:
-
-        estimated_exit_fee = (
-            estimate_fee(
-                open_size
-                * current_price
-            )
-        )
-
-    # --------------------------------------------------------
-    # FUNDING
-    # --------------------------------------------------------
-
-    funding_pnl = (
-        get_funding_pnl(
-            state
-        )
-    )
-
-    # --------------------------------------------------------
-    # PNL TOTALE
-    # --------------------------------------------------------
-
-    total_net_pnl = (
-        realized_net
-        + unrealized_gross
-        + funding_pnl
-        - open_buy_fees
-        - estimated_exit_fee
-    )
-
-    # Capitale effettivamente acquistato
-    # dall'inizio della strategia:
-    #
-    # BUY dei lotti aperti
-    # + costo BUY delle parti già vendute.
-    #
-    # Per le parti vendute ricaviamo il costo
-    # direttamente dai sell_trade.
-    closed_buy_cost = sum(
-        float(
-            trade["buy_cost_allocated"]
-        )
-        for trade in state[
-            "sell_trades"
-        ]
-    )
-
-    total_capital_deployed = (
-        open_cost
-        + closed_buy_cost
-    )
-
-    return_percent = (
-        total_net_pnl
-        / total_capital_deployed
-        * 100
-        if total_capital_deployed > 0
-        else 0.0
-    )
-
-    return {
-        "current_price":
-            current_price,
-
-        "total_buy_notional":
-            total_buy_notional,
-
-        "total_buy_fees":
-            total_buy_fees,
-
-        "total_sell_notional":
-            total_sell_notional,
-
-        "total_sell_fees":
-            total_sell_fees,
-
-        "open_size":
-            open_size,
-
-        "open_cost":
-            open_cost,
-
-        "weighted_avg_open_price":
-            weighted_avg_open_price,
-
-        "realized_gross_pnl":
-            realized_gross,
-
-        "realized_net_pnl":
-            realized_net,
-
-        "unrealized_gross_pnl":
-            unrealized_gross,
-
-        "funding_pnl":
-            funding_pnl,
-
-        "estimated_exit_fee":
-            estimated_exit_fee,
-
-        "total_capital_deployed":
-            total_capital_deployed,
-
-        "total_net_pnl":
-            total_net_pnl,
-
-        "return_percent":
-            return_percent,
-    }
-
-
-def log_performance(state):
-
-    performance = (
-        calculate_performance(
-            state
-        )
-    )
-
-    account = (
-        get_account_state()
-    )
-
-    log(
-        "PERFORMANCE | "
-        f"capitale disponibile "
-        f"${account['available_usdc']:.2f} | "
-        f"investito ${performance['total_capital_deployed']:.2f} | "
-        f"venduto ${performance['total_sell_notional']:.2f} | "
-        f"posizione {performance['open_size']:.8f} BTC | "
-        f"media acquisto "
-        f"${performance['weighted_avg_open_price']:.2f} | "
-        f"realizzato "
-        f"${performance['realized_net_pnl']:.4f} | "
-        f"unrealizzato "
-        f"${performance['unrealized_gross_pnl']:.4f} | "
-        f"funding "
-        f"${performance['funding_pnl']:.4f} | "
-        f"PnL totale "
-        f"${performance['total_net_pnl']:.4f} | "
-        f"rendimento "
-        f"{performance['return_percent']:.2f}%"
-    )
-
-
-# ============================================================
-# CICLO PRINCIPALE
-# ============================================================
-
-def run():
-
-    log(
-        "=================================================="
-    )
-
-    log(
-        "AVVIO BOT HYPERLIQUID BTC"
-    )
-
-    log(
-        f"PARAMETRI | "
-        f"BUY ${BUY_USD:.2f} | "
-        f"DIP {DIP_PERCENT:.2f}% | "
-        f"TP {TAKE_PROFIT_PERCENT:.2f}% | "
-        f"MAX POS ${MAX_POSITION_USD:.2f} | "
-        f"MAX BUY SETT {MAX_WEEKLY_BUYS}"
-    )
-
-    state = load_state()
-
-    reset_week_if_needed(
-        state
-    )
-
-    # --------------------------------------------------------
-    # CAPITALE
-    # --------------------------------------------------------
-
-    log_capital()
-
-    # --------------------------------------------------------
-    # SICUREZZA POSIZIONE
-    # --------------------------------------------------------
-
-    verify_position_consistency(
-        state
-    )
-
-    # --------------------------------------------------------
-    # CANDELE
-    # --------------------------------------------------------
-
-    (
-        previous_candle,
-        latest_candle
-    ) = get_last_two_closed_candles()
-
-    candle_id = int(
-        latest_candle["T"]
-    )
-
-    candle_datetime = (
-        datetime.fromtimestamp(
-            candle_id / 1000,
-            tz=timezone.utc
-        )
-    )
-
-    log(
-        f"ULTIMA 4H CHIUSA | "
-        f"{candle_datetime}"
-    )
-
-    # --------------------------------------------------------
-    # GIÀ ELABORATA
-    # --------------------------------------------------------
-
-    if (
-        state["last_processed_candle"]
-        == candle_id
-    ):
-
-        log(
-            "Candela già elaborata. "
-            "Nessuna operazione."
-        )
-
-        log_performance(
-            state
-        )
-
-        return
-
-    current_price = (
-        get_mid_price()
-    )
-
-    log(
-        f"BTC MID ${current_price:.2f}"
-    )
-
-    # --------------------------------------------------------
-    # 1. SELL PRIMA DEL BUY
-    # --------------------------------------------------------
-
-    sold = check_sell(
-        state,
-        current_price
-    )
-
-    if sold:
-
-        verify_position_consistency(
-            state
-        )
-
-        # Se ha venduto,
-        # non compra sulla stessa candela.
-        state[
-            "last_processed_candle"
-        ] = candle_id
-
-        save_state(
-            state
-        )
-
-        log_performance(
-            state
-        )
-
-        log(
-            "CICLO TERMINATO DOPO SELL."
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # 2. BUY
-    # --------------------------------------------------------
-
-    check_buy(
-        state,
-        previous_candle,
-        latest_candle
-    )
-
-    # --------------------------------------------------------
-    # 3. SICUREZZA FINALE
-    # --------------------------------------------------------
-
-    verify_position_consistency(
-        state
-    )
-
-    state[
-        "last_processed_candle"
-    ] = candle_id
-
-    save_state(
-        state
-    )
-
-    # --------------------------------------------------------
-    # PERFORMANCE
-    # --------------------------------------------------------
-
-    log_performance(
-        state
-    )
-
-    log(
-        "CICLO TERMINATO."
-    )
-
-    log(
-        "=================================================="
-    )
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-if __name__ == "__main__":
-
-    try:
-
-        if STARTUP_DELAY > 0:
-            time.sleep(
-                STARTUP_DELAY
-            )
-
-        run()
-
-    except Exception as exc:
-
-        log(
-            f"ERRORE FATALE: {exc}"
-        )
-
-        log(
-            "BOT BLOCCATO: nessun altro ordine "
-            "verrà eseguito in questo ciclo."
-        )
-
-        sys.exit(1)
+ifnotselected:
+returnNone
+
+total_size=0.0
+total_notional=0.0
+
+forfillinselected:
+
+size=abs(
+float(
+fill.get(
+"sz",
+0
+)or0
+)
+)
+
+price=float(
+fill.get(
+"px",
+0
+)or0
+)
+
+total_size+=size
+
+total_notional+=(
+size*price
+)
+
+iftotal_size<=0:
+returnNone
+
+return{
+"size":total_size,
+
+"price":(
+total_notional
+/total_size
+),
+
+"notional":total_notional
+}
+
+
+#============================================================
+#FEESTIMATA
+#============================================================
+
+defestimate_fee(
+notional
+):
+
+try:
+
+fees=info.user_fees(
+ACCOUNT_ADDRESS
+)
+
+#PerordineIOCaggressivo
+rate=float(
+fees.get(
+"userCrossRate",
+0
+)or0
+)
+
+return(
+notional*rate
+)
+
+exceptException:
+
+return0.0
+
+
+#============================================================
+#CONTROLLOPOSIZIONESPOT
+#============================================================
+
+defverify_spot_position(
+state
+):
+
+balances=get_spot_balances()
+
+real_btc=balances[
+"btc_total"
+]
+
+local_btc=sum(
+float(
+lot["remaining_size"]
+)
+forlotinstate[
+"open_lots"
+]
+)
+
+difference=abs(
+real_btc-local_btc
+)
+
+log(
+f"CONTROLLOSPOT|"
+f"BTCreale{real_btc:.8f}|"
+f"lotti{local_btc:.8f}|"
+f"diff{difference:.8f}"
+)
+
+ifdifference>POSITION_TOLERANCE:
+
+raiseRuntimeError(
+"INCOERENZABTCSPOT:"
+f"saldoreale={real_btc:.8f},"
+f"lottilocali={local_btc:.8f}."
+"BOTBLOCCATO."
+)
+
+returnbalances
+
+
+#============================================================
+#CANDELE4HSPOT
+#============================================================
+
+defget_closed_4h_candles():
+
+now_ms=int(
+datetime.now(
+timezone.utc
+).timestamp()*1000
+)
+
+start_ms=(
+now_ms
+-(
+4
+*60
+*60
+*1000
+*10
+)
+)
+
+candles=info.candles_snapshot(
+SPOT_COIN,
+"4h",
+start_ms,
+now_ms
+)
+
+closed=[]
+
+forcandleincandles:
+
+ifint(
+candle["T"]
+)<=now_ms:
+
+closed.append(
+candle
+)
+
+closed.sort(
+key=lambdax:int(x["T"])
+)
+
+returnclosed
+
+
+#============================================================
+#BUYSPOT
+#============================================================
+
+defplace_buy(state):
+
+balances=get_spot_balances()
+
+current_btc=balances[
+"btc_total"
+]
+
+current_price=get_spot_price()
+
+current_position_value=(
+current_btc
+*current_price
+)
+
+if(
+current_position_value
++BUY_USD
+>MAX_POSITION_USD
+):
+
+log(
+f"BUYBLOCCATO|"
+f"BTCattuale${current_position_value:.2f}|"
+f"BUY${BUY_USD:.2f}|"
+f"MAX${MAX_POSITION_USD:.2f}"
+)
+
+returnFalse
+
+if(
+state["weekly_buys"]
+>=MAX_WEEKLY_BUYS
+):
+
+log(
+f"BUYBLOCCATO|"
+f"limitesettimanale"
+f"{MAX_WEEKLY_BUYS}"
+)
+
+returnFalse
+
+if(
+balances["usdc_available"]
+<BUY_USD
+):
+
+log(
+f"BUYBLOCCATO|"
+f"USDCdisponibili"
+f"${balances['usdc_available']:.4f}|"
+f"necessari${BUY_USD:.2f}"
+)
+
+returnFalse
+
+#sizeindicativa
+buy_size=(
+BUY_USD
+/current_price
+)
+
+buy_size=round_btc(
+buy_size
+)
+
+ifbuy_size<=0:
+
+log(
+"BUYBLOCCATO|sizeBTCnonvalida"
+)
+
+returnFalse
+
+order_start_ms=int(
+datetime.now(
+timezone.utc
+).timestamp()*1000
+)
+
+result=spot_market_order(
+True,
+buy_size
+)
+
+ifresult.get(
+"status"
+)!="ok":
+
+raiseRuntimeError(
+f"BUYSPOTrifiutato:{result}"
+)
+
+time.sleep(
+POST_ORDER_DELAY
+)
+
+fill=None
+
+for_inrange(
+FILL_CHECK_ATTEMPTS
+):
+
+fills=get_spot_fills_since(
+order_start_ms-2000
+)
+
+fill=calculate_fill(
+fills,
+True
+)
+
+iffill:
+break
+
+time.sleep(
+FILL_CHECK_DELAY
+)
+
+ifnotfill:
+
+raiseRuntimeError(
+"BUYinviatomafillSpotnonrilevato."
+)
+
+actual_size=fill[
+"size"
+]
+
+actual_price=fill[
+"price"
+]
+
+actual_notional=fill[
+"notional"
+]
+
+fee=estimate_fee(
+actual_notional
+)
+
+target_price=(
+actual_price
+*(
+1
++TAKE_PROFIT_PERCENT/100
+)
+)
+
+lot={
+
+"id":state[
+"next_lot_id"
+],
+
+"buy_time":int(
+datetime.now(
+timezone.utc
+).timestamp()*1000
+),
+
+"buy_price":actual_price,
+
+"buy_size":actual_size,
+
+"remaining_size":actual_size,
+
+"buy_notional":actual_notional,
+
+"buy_fee":fee,
+
+"target_price":target_price
+}
+
+state[
+"next_lot_id"
+]+=1
+
+state[
+"open_lots"
+].append(
+lot
+)
+
+state[
+"weekly_buys"
+]+=1
+
+state[
+"last_buy"
+]=lot
+
+save_state(
+state
+)
+
+log(
+f"BUYSPOTCONFERMATO|"
+f"lotto#{lot['id']}|"
+f"{actual_size:.8f}BTC|"
+f"prezzo${actual_price:.2f}|"
+f"investiti${actual_notional:.4f}|"
+f"TP${target_price:.2f}"
+)
+
+returnTrue
+
+
+#============================================================
+#LOTTIVENDIBILI
+#============================================================
+
+defget_sellable_lots(
+state
+):
+
+current_price=get_spot_price()
+
+eligible=[]
+
+forlotinsorted(
+state["open_lots"],
+key=lambdax:x["id"]
+):
+
+if(
+lot["remaining_size"]
+<=POSITION_TOLERANCE
+):
+continue
+
+if(
+current_price
+>=lot["target_price"]
+):
+
+eligible.append(
+lot
+)
+
+returneligible
+
+
+#============================================================
+#SELLSPOT
+#============================================================
+
+defsell_lot(
+state,
+lot
+):
+
+sell_size=round_btc(
+lot["remaining_size"]
+)
+
+ifsell_size<=0:
+returnFalse
+
+current_price=get_spot_price()
+
+if(
+current_price
+<lot["target_price"]
+):
+
+returnFalse
+
+balances=get_spot_balances()
+
+if(
+balances["btc_available"]
++POSITION_TOLERANCE
+<sell_size
+):
+
+raiseRuntimeError(
+"BTCSpotdisponibile"
+"inferioreallottodavendere."
+)
+
+log(
+f"SELLSPOT|"
+f"lotto#{lot['id']}|"
+f"{sell_size:.8f}BTC|"
+f"prezzo${current_price:.2f}|"
+f"target${lot['target_price']:.2f}"
+)
+
+order_start_ms=int(
+datetime.now(
+timezone.utc
+).timestamp()*1000
+)
+
+result=spot_market_order(
+False,
+sell_size
+)
+
+ifresult.get(
+"status"
+)!="ok":
+
+raiseRuntimeError(
+f"SELLSPOTrifiutato:{result}"
+)
+
+time.sleep(
+POST_ORDER_DELAY
+)
+
+fill=None
+
+for_inrange(
+FILL_CHECK_ATTEMPTS
+):
+
+fills=get_spot_fills_since(
+order_start_ms-2000
+)
+
+fill=calculate_fill(
+fills,
+False
+)
+
+iffill:
+break
+
+time.sleep(
+FILL_CHECK_DELAY
+)
+
+ifnotfill:
+
+raiseRuntimeError(
+"SELLinviatomafillSpot"
+"nonrilevato."
+)
+
+sold_size=min(
+fill["size"],
+lot["remaining_size"]
+)
+
+sell_price=fill[
+"price"
+]
+
+sell_notional=fill[
+"notional"
+]
+
+allocated_buy_cost=(
+lot["buy_price"]
+*sold_size
+)
+
+allocated_buy_fee=(
+lot["buy_fee"]
+*(
+sold_size
+/lot["buy_size"]
+)
+)
+
+sell_fee=estimate_fee(
+sell_notional
+)
+
+gross_pnl=(
+sell_notional
+-allocated_buy_cost
+)
+
+net_pnl=(
+gross_pnl
+-allocated_buy_fee
+-sell_fee
+)
+
+lot[
+"remaining_size"
+]=max(
+0.0,
+lot["remaining_size"]
+-sold_size
+)
+
+trade={
+
+"lot_id":lot["id"],
+
+"sell_time":int(
+datetime.now(
+timezone.utc
+).timestamp()*1000
+),
+
+"sell_size":sold_size,
+
+"sell_price":sell_price,
+
+"sell_notional":sell_notional,
+
+"buy_cost_allocated":
+allocated_buy_cost,
+
+"buy_fee_allocated":
+allocated_buy_fee,
+
+"sell_fee":sell_fee,
+
+"gross_pnl":gross_pnl,
+
+"net_pnl":net_pnl
+}
+
+state[
+"sell_trades"
+].append(
+trade
+)
+
+if(
+lot["remaining_size"]
+<=POSITION_TOLERANCE
+):
+
+state[
+"open_lots"
+].remove(
+lot
+)
+
+state[
+"last_sell"
+]=trade
+
+save_state(
+state
+)
+
+log(
+f"SELLSPOTCONFERMATO|"
+f"lotto#{lot['id']}|"
+f"{sold_size:.8f}BTC|"
+f"prezzo${sell_price:.2f}|"
+f"PnLnetto${net_pnl:.4f}"
+)
+
+returnTrue
+
+
+#============================================================
+#SELLCHECK
+#============================================================
+
+defcheck_sell(
+state
+):
+
+eligible=get_sellable_lots(
+state
+)
+
+ifnoteligible:
+returnFalse
+
+#FIFO
+lot=eligible[0]
+
+returnsell_lot(
+state,
+lot
+)
+
+
+#============================================================
+#BUYCHECK
+#============================================================
+
+defcheck_buy(
+state,
+latest_close,
+previous_close
+):
+
+ifprevious_close<=0:
+returnFalse
+
+change_percent=(
+(
+latest_close
+-previous_close
+)
+/previous_close
+)*100
+
+log(
+f"VARIAZIONE4HSPOT|"
+f"{change_percent:.4f}%"
+)
+
+if(
+change_percent
+<=-DIP_PERCENT
+):
+
+log(
+f"DIPSPOTRILEVATO|"
+f"{change_percent:.4f}%<="
+f"-{DIP_PERCENT:.2f}%"
+)
+
+returnplace_buy(
+state
+)
+
+returnFalse
+
+
+#============================================================
+#PERFORMANCE
+#============================================================
+
+defcalculate_performance(
+state
+):
+
+balances=get_spot_balances()
+
+current_price=get_spot_price()
+
+btc_value=(
+balances["btc_total"]
+*current_price
+)
+
+open_cost=0.0
+open_size=0.0
+open_buy_fees=0.0
+
+forlotinstate[
+"open_lots"
+]:
+
+size=float(
+lot["remaining_size"]
+)
+
+open_size+=size
+
+open_cost+=(
+size
+*float(
+lot["buy_price"]
+)
+)
+
+iflot["buy_size"]>0:
+
+open_buy_fees+=(
+float(
+lot["buy_fee"]
+)
+*(
+size
+/float(
+lot["buy_size"]
+)
+)
+)
+
+closed_buy_cost=sum(
+float(
+trade[
+"buy_cost_allocated"
+]
+)
+fortradeinstate[
+"sell_trades"
+]
+)
+
+historical_buy_cost=(
+open_cost
++closed_buy_cost
+)
+
+sold_notional=sum(
+float(
+trade[
+"sell_notional"
+]
+)
+fortradeinstate[
+"sell_trades"
+]
+)
+
+realized_net=sum(
+float(
+trade["net_pnl"]
+)
+fortradeinstate[
+"sell_trades"
+]
+)
+
+unrealized_gross=(
+btc_value
+-open_cost
+)
+
+estimated_exit_fee=estimate_fee(
+btc_value
+)
+
+total_net_pnl=(
+realized_net
++unrealized_gross
+-open_buy_fees
+-estimated_exit_fee
+)
+
+ifhistorical_buy_cost>0:
+
+return_percent=(
+total_net_pnl
+/historical_buy_cost
+)*100
+
+else:
+
+return_percent=0.0
+
+return{
+
+"usdc_available":
+balances[
+"usdc_available"
+],
+
+"btc_size":
+balances[
+"btc_total"
+],
+
+"btc_value":
+btc_value,
+
+"open_cost":
+open_cost,
+
+"weighted_avg_price":(
+open_cost/open_size
+ifopen_size>0
+else0.0
+),
+
+"sold_notional":
+sold_notional,
+
+"realized_net":
+realized_net,
+
+"unrealized_gross":
+unrealized_gross,
+
+"total_net_pnl":
+total_net_pnl,
+
+"return_percent":
+return_percent
+}
+
+
+#============================================================
+#LOGCAPITALE
+#============================================================
+
+deflog_capital():
+
+balances=get_spot_balances()
+
+price=get_spot_price()
+
+btc_value=(
+balances["btc_total"]
+*price
+)
+
+log(
+f"CAPITALESPOT|"
+f"USDCdisponibile"
+f"${balances['usdc_available']:.4f}|"
+f"BTC"
+f"{balances['btc_total']:.8f}"
+f"(~${btc_value:.4f})"
+)
+
+
+#============================================================
+#MAIN
+#============================================================
+
+defrun():
+
+globalstate
+
+state=load_state()
+
+refresh_week(
+state
+)
+
+time.sleep(
+STARTUP_DELAY
+)
+
+log("="*50)
+
+log(
+"AVVIOBOTHYPERLIQUIDBTCSPOT"
+)
+
+log(
+f"PARAMETRI|"
+f"BUY${BUY_USD:.2f}|"
+f"DIP{DIP_PERCENT:.2f}%|"
+f"TP{TAKE_PROFIT_PERCENT:.2f}%|"
+f"MAXBTC${MAX_POSITION_USD:.2f}|"
+f"MAXBUYSETT{MAX_WEEKLY_BUYS}"
+)
+
+log_capital()
+
+#--------------------------------------------------------
+#CONTROLLOSALDOBTC
+#--------------------------------------------------------
+
+verify_spot_position(
+state
+)
+
+#--------------------------------------------------------
+#CANDELE4HSPOT
+#--------------------------------------------------------
+
+candles=get_closed_4h_candles()
+
+iflen(candles)<2:
+
+log(
+"Noncisonoabbastanza"
+"candele4HSpot."
+)
+
+return
+
+latest=candles[-1]
+previous=candles[-2]
+
+latest_candle_time=int(
+latest["T"]
+)
+
+latest_close=float(
+latest["c"]
+)
+
+previous_close=float(
+previous["c"]
+)
+
+latest_datetime=(
+datetime.fromtimestamp(
+latest_candle_time/1000,
+tz=timezone.utc
+)
+)
+
+log(
+f"ULTIMA4HSPOTCHIUSA|"
+f"{latest_datetime}"
+)
+
+#--------------------------------------------------------
+#EVITADOPPIAELABORAZIONE
+#--------------------------------------------------------
+
+if(
+state.get(
+"last_processed_candle"
+)
+==latest_candle_time
+):
+
+log(
+"Candelagiàelaborata."
+"Nessunaoperazione."
+)
+
+performance=(
+calculate_performance(
+state
+)
+)
+
+log(
+f"PERFORMANCESPOT|"
+f"USDCdisponibile"
+f"${performance['usdc_available']:.4f}|"
+f"BTC"
+f"{performance['btc_size']:.8f}|"
+f"valoreBTC"
+f"${performance['btc_value']:.4f}|"
+f"investito"
+f"${performance['open_cost']:.4f}|"
+f"venduto"
+f"${performance['sold_notional']:.4f}|"
+f"mediaacquisto"
+f"${performance['weighted_avg_price']:.2f}|"
+f"realizzato"
+f"${performance['realized_net']:.4f}|"
+f"unrealizzato"
+f"${performance['unrealized_gross']:.4f}|"
+f"PnLtotale"
+f"${performance['total_net_pnl']:.4f}|"
+f"rendimento"
+f"{performance['return_percent']:.2f}%"
+)
+
+return
+
+#--------------------------------------------------------
+#SELLPRIMADELBUY
+#--------------------------------------------------------
+
+sold=check_sell(
+state
+)
+
+ifsold:
+
+state[
+"last_processed_candle"
+]=latest_candle_time
+
+save_state(
+state
+)
+
+log(
+"SELLSPOTeseguito:"
+"nessunBUYsullastessacandela."
+)
+
+log_capital()
+
+return
+
+#--------------------------------------------------------
+#BUY
+#--------------------------------------------------------
+
+bought=check_buy(
+state,
+latest_close,
+previous_close
+)
+
+ifbought:
+
+log(
+"BUYSPOTeseguito."
+)
+
+else:
+
+log(
+"NessunBUYSPOT."
+)
+
+#--------------------------------------------------------
+#CONTROLLOFINALE
+#--------------------------------------------------------
+
+verify_spot_position(
+state
+)
+
+state[
+"last_processed_candle"
+]=latest_candle_time
+
+save_state(
+state
+)
+
+log_capital()
+
+performance=(
+calculate_performance(
+state
+)
+)
+
+log(
+f"PERFORMANCESPOT|"
+f"USDCdisponibile"
+f"${performance['usdc_available']:.4f}|"
+f"BTC"
+f"{performance['btc_size']:.8f}|"
+f"valoreBTC"
+f"${performance['btc_value']:.4f}|"
+f"investito"
+f"${performance['open_cost']:.4f}|"
+f"venduto"
+f"${performance['sold_notional']:.4f}|"
+f"mediaacquisto"
+f"${performance['weighted_avg_price']:.2f}|"
+f"realizzato"
+f"${performance['realized_net']:.4f}|"
+f"unrealizzato"
+f"${performance['unrealized_gross']:.4f}|"
+f"PnLtotale"
+f"${performance['total_net_pnl']:.4f}|"
+f"rendimento"
+f"{performance['return_percent']:.2f}%"
+)
+
+
+#============================================================
+#START
+#============================================================
+
+if__name__=="__main__":
+
+try:
+
+run()
+
+exceptExceptionase:
+
+log(
+f"ERROREFATALE|{e}"
+)
+
+sys.exit(1)
