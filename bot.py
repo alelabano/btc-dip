@@ -255,21 +255,33 @@ def get_spot_balances():
 # ============================================================
 
 def get_spot_price():
-    data = info.spot_meta_and_asset_ctxs()
+    book = info.l2_snapshot(SPOT_COIN)
 
-    meta = data[0]
-    contexts = data[1]
+    levels = book.get("levels", [])
 
-    for i, market in enumerate(meta["universe"]):
-        if market.get("name") == SPOT_COIN:
-            mid = contexts[i].get("midPx")
+    if len(levels) < 2:
+        raise RuntimeError(
+            "Orderbook BTC/USDC non disponibile"
+        )
 
-            if mid is None:
-                raise RuntimeError(f"Prezzo {SPOT_COIN} non disponibile")
+    bids = levels[0]
+    asks = levels[1]
 
-            return float(mid)
+    if not bids or not asks:
+        raise RuntimeError(
+            "Bid/Ask BTC/USDC non disponibili"
+        )
 
-    raise RuntimeError(f"Mercato {SPOT_COIN} Spot non trovato")
+    best_bid = float(bids[0]["px"])
+    best_ask = float(asks[0]["px"])
+
+    if best_bid <= 0 or best_ask <= 0:
+        raise RuntimeError(
+            f"Prezzo Spot non valido: "
+            f"bid={best_bid}, ask={best_ask}"
+        )
+
+    return (best_bid + best_ask) / 2.0
 
 
 # ============================================================
