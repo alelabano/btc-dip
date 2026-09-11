@@ -217,10 +217,7 @@ def round_btc(size):
 
 
 def get_spot_price_decimals():
-    # Hyperliquid Spot: price decimals are derived from
-    # 8 - szDecimals, subject to the asset's significant-digit rule.
-    sz_decimals = get_spot_decimals()
-    return max(0, 8 - sz_decimals)
+    return 2
 
 
 def round_spot_price(price, is_buy):
