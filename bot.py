@@ -279,41 +279,54 @@ def round_size(size):
 
 def get_account_state():
     """
-    Restituisce:
-      - account_value = valore complessivo account
-      - available_usdc = withdrawable, cioè capitale
-        attualmente disponibile/non impegnato
-      - margin_used = margine utilizzato
+    Legge il capitale del conto Hyperliquid.
+
+    account_value  = valore totale del conto
+    withdrawable   = USDC disponibile/non impegnato
+    margin_used    = margine utilizzato
     """
 
     user_state = info.user_state(
         ACCOUNT_ADDRESS
     )
 
-    margin = user_state.get(
+    margin_summary = user_state.get(
         "marginSummary",
         {}
     )
 
+    cross_margin_summary = user_state.get(
+        "crossMarginSummary",
+        {}
+    )
+
     account_value = float(
-        margin.get(
+        margin_summary.get(
             "accountValue",
             0
-        )
+        ) or 0
     )
 
     margin_used = float(
-        margin.get(
+        margin_summary.get(
             "totalMarginUsed",
             0
-        )
+        ) or 0
     )
 
-    available_usdc = float(
-        user_state.get(
-            "withdrawable",
-            0
+    # withdrawable è al livello principale
+    # della risposta clearinghouseState.
+    withdrawable_raw = user_state.get(
+        "withdrawable"
+    )
+
+    if withdrawable_raw is None:
+        withdrawable_raw = cross_margin_summary.get(
+            "withdrawable"
         )
+
+    available_usdc = float(
+        withdrawable_raw or 0
     )
 
     return {
@@ -321,7 +334,6 @@ def get_account_state():
         "available_usdc": available_usdc,
         "margin_used": margin_used,
     }
-
 
 def log_capital():
     account = get_account_state()
