@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -901,5 +902,5 @@ if __name__ == "__main__":
     try:
         run()
     except Exception as e:
-        log(f"ERRORE FATALE | {e}")
+        log(f"ERRORE FATALE | {e}\n{traceback.format_exc()}")
         sys.exit(1)
