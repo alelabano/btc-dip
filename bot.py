@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 import time
 import traceback
 from datetime import datetime, timezone
@@ -22,7 +21,12 @@ load_dotenv()
 PRIVATE_KEY = os.getenv("HYPERLIQUID_PRIVATE_KEY")
 ACCOUNT_ADDRESS = os.getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 
-# SPOT ONLY
+# CANDELE
+CANDLE_INTERVAL = os.getenv("CANDLE_INTERVAL", "15m")
+CANDLE_INTERVAL_MS = 15 * 60 * 1000
+
+# LOOP
+LOOP_INTERVAL_SECONDS = int(os.getenv("LOOP_INTERVAL_SECONDS", "60"))
 
 BUY_USD = float(os.getenv("BUY_USD", "10"))
 MAX_POSITION_USD = float(os.getenv("MAX_POSITION_USD", "200"))
@@ -433,15 +437,15 @@ def verify_spot_position(state):
 
 
 # ============================================================
-# CANDELE 4H SPOT
+# CANDELE 15M SPOT
 # ============================================================
 
-def get_closed_4h_candles():
+def get_closed_candles():
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-    start_ms = now_ms - (4 * 60 * 60 * 1000 * 10)
+    start_ms = now_ms - (CANDLE_INTERVAL_MS * 10)
 
-    candles = info.candles_snapshot(SPOT_COIN, "4h", start_ms, now_ms)
+    candles = info.candles_snapshot(SPOT_COIN, CANDLE_INTERVAL, start_ms, now_ms)
 
     closed = []
 
@@ -706,7 +710,7 @@ def check_buy(state, latest_close, previous_close):
 
     change_percent = ((latest_close - previous_close) / previous_close) * 100
 
-    log(f"VARIAZIONE 4H SPOT | {change_percent:.4f}%")
+    log(f"VARIAZIONE 15M SPOT | {change_percent:.4f}%")
 
     if change_percent <= -DIP_PERCENT:
         log(f"DIP SPOT RILEVATO | {change_percent:.4f}% <= -{DIP_PERCENT:.2f}%")
@@ -803,8 +807,6 @@ def run():
 
     refresh_week(state)
 
-    time.sleep(STARTUP_DELAY)
-
     log("=" * 50)
 
     log("AVVIO BOT HYPERLIQUID BTC SPOT")
@@ -827,13 +829,13 @@ def run():
     verify_spot_position(state)
 
     # --------------------------------------------------------
-    # CANDELE 4H SPOT
+    # CANDELE 15M SPOT
     # --------------------------------------------------------
 
-    candles = get_closed_4h_candles()
+    candles = get_closed_candles()
 
     if len(candles) < 2:
-        log("Non ci sono abbastanza candele 4H Spot.")
+        log("Non ci sono abbastanza candele 15M Spot.")
         return
 
     latest = candles[-1]
@@ -847,7 +849,7 @@ def run():
 
     latest_datetime = datetime.fromtimestamp(latest_candle_time / 1000, tz=timezone.utc)
 
-    log(f"ULTIMA 4H SPOT CHIUSA | {latest_datetime}")
+    log(f"ULTIMA 15M SPOT CHIUSA | {latest_datetime}")
 
     # --------------------------------------------------------
     # EVITA DOPPIA ELABORAZIONE
@@ -936,8 +938,13 @@ def run():
 # ============================================================
 
 if __name__ == "__main__":
-    try:
-        run()
-    except Exception as e:
-        log(f"ERRORE FATALE | {e}\n{traceback.format_exc()}")
-        sys.exit(1)
+    time.sleep(STARTUP_DELAY)
+
+    while True:
+        try:
+            run()
+        except Exception as e:
+            log(f"ERRORE FATALE | {e}\n{traceback.format_exc()}")
+
+        time.sleep(LOOP_INTERVAL_SECONDS)
+
