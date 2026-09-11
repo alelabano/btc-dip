@@ -710,7 +710,7 @@ def check_buy(state, latest_close, previous_close):
 
     change_percent = ((latest_close - previous_close) / previous_close) * 100
 
-    log(f"VARIAZIONE 15M SPOT | {change_percent:.4f}%")
+    log(f"VARIAZIONE 4H SPOT | {change_percent:.4f}%")
 
     if change_percent <= -DIP_PERCENT:
         log(f"DIP SPOT RILEVATO | {change_percent:.4f}% <= -{DIP_PERCENT:.2f}%")
