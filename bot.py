@@ -23,7 +23,6 @@ PRIVATE_KEY = os.getenv("HYPERLIQUID_PRIVATE_KEY")
 ACCOUNT_ADDRESS = os.getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 
 # SPOT ONLY
-SPOT_COIN = "BTC/USDC"
 
 BUY_USD = float(os.getenv("BUY_USD", "10"))
 MAX_POSITION_USD = float(os.getenv("MAX_POSITION_USD", "200"))
@@ -70,6 +69,27 @@ wallet = Account.from_key(PRIVATE_KEY)
 info = Info(constants.MAINNET_API_URL, skip_ws=True)
 
 exchange = Exchange(wallet, constants.MAINNET_API_URL, account_address=ACCOUNT_ADDRESS)
+
+
+# ============================================================
+# RISOLUZIONE COPPIA SPOT BTC
+# ============================================================
+# Su HyperCore il pair BTC/USDC mostrato sull'interfaccia puo'
+# corrispondere a un nome diverso nei metadata (es. UBTC/USDC).
+# Risolviamo il nome corretto una sola volta all'avvio.
+
+def resolve_spot_coin():
+    meta = info.spot_meta()
+
+    for market in meta["universe"]:
+        if market.get("name") in ("UBTC/USDC", "BTC/USDC"):
+            return market["name"]
+
+    raise RuntimeError("Coppia spot BTC/USDC (o UBTC/USDC) non trovata nei metadata Hyperliquid")
+
+
+SPOT_COIN = resolve_spot_coin()
+BASE_COIN = SPOT_COIN.split("/")[0]
 
 
 # ============================================================
@@ -159,10 +179,10 @@ def get_spot_decimals():
     meta = info.spot_meta()
 
     for token in meta["tokens"]:
-        if token["name"] == "BTC":
+        if token["name"] == BASE_COIN:
             return int(token["szDecimals"])
 
-    raise RuntimeError("BTC non trovato nei metadata Spot")
+    raise RuntimeError(f"{BASE_COIN} non trovato nei metadata Spot")
 
 
 def round_btc(size):
@@ -192,7 +212,7 @@ def get_spot_balances():
         if coin == "USDC":
             usdc_total = total
             usdc_hold = hold
-        elif coin == "BTC":
+        elif coin == BASE_COIN:
             btc_total = total
             btc_hold = hold
 
@@ -216,24 +236,15 @@ def get_spot_price():
     contexts = data[1]
 
     for i, market in enumerate(meta["universe"]):
-        base_idx = market["tokens"][0]
-        quote_idx = market["tokens"][1]
-
-        if base_idx >= len(meta["tokens"]) or quote_idx >= len(meta["tokens"]):
-            continue
-
-        base = meta["tokens"][base_idx]["name"]
-        quote = meta["tokens"][quote_idx]["name"]
-
-        if base == "BTC" and quote == "USDC":
+        if market.get("name") == SPOT_COIN:
             mid = contexts[i].get("midPx")
 
             if mid is None:
-                raise RuntimeError("Prezzo BTC/USDC non disponibile")
+                raise RuntimeError(f"Prezzo {SPOT_COIN} non disponibile")
 
             return float(mid)
 
-    raise RuntimeError("Mercato BTC/USDC Spot non trovato")
+    raise RuntimeError(f"Mercato {SPOT_COIN} Spot non trovato")
 
 
 # ============================================================
@@ -311,7 +322,7 @@ def get_spot_fills_since(start_ms):
     for fill in fills:
         coin = fill.get("coin")
 
-        if coin in (SPOT_COIN, "BTC/USDC"):
+        if coin == SPOT_COIN:
             result.append(fill)
 
     return result
