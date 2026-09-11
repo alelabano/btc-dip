@@ -217,6 +217,12 @@ def round_btc(size):
 
 
 def get_spot_price_decimals():
+    meta = info.spot_meta()
+    for universe in meta.get("universe", []):
+        if universe.get("name") == SPOT_COIN:
+            # Recupera i decimali di prezzo specifici del mercato se presenti, 
+            # altrimenti imposta il valore standard per BTC/USDC (2 decimali)
+            return universe.get("priceDecimals", 2)
     return 2
 
 
