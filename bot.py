@@ -47,7 +47,7 @@ FILL_CHECK_ATTEMPTS = int(os.getenv("FILL_CHECK_ATTEMPTS", "5"))
 
 FILL_CHECK_DELAY = float(os.getenv("FILL_CHECK_DELAY", "1"))
 
-POSITION_TOLERANCE = float(os.getenv("POSITION_TOLERANCE", "0.00001"))
+POSITION_TOLERANCE = float(os.getenv("POSITION_TOLERANCE", "0.00003"))
 
 
 # ============================================================
