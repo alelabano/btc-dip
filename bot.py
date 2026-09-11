@@ -219,6 +219,9 @@ def get_spot_price():
         base_idx = market["tokens"][0]
         quote_idx = market["tokens"][1]
 
+        if base_idx >= len(meta["tokens"]) or quote_idx >= len(meta["tokens"]):
+            continue
+
         base = meta["tokens"][base_idx]["name"]
         quote = meta["tokens"][quote_idx]["name"]
 
