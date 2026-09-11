@@ -72,15 +72,15 @@ os.getenv("POSITION_TOLERANCE","0.00000001")
 #VALIDAZIONE
 #============================================================
 
-ifnotPRIVATE_KEY:
-raiseRuntimeError(
-"HYPERLIQUID_PRIVATE_KEYmancante"
-)
+if not PRIVATE_KEY:
+    raise RuntimeError(
+        "HYPERLIQUID_PRIVATE_KEYmancante"
+    )
 
-ifnotACCOUNT_ADDRESS:
-raiseRuntimeError(
-"HYPERLIQUID_ACCOUNT_ADDRESSmancante"
-)
+if not ACCOUNT_ADDRESS:
+    raise RuntimeError(
+        "HYPERLIQUID_ACCOUNT_ADDRESSmancante"
+    )
 
 
 #============================================================
