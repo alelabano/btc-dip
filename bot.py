@@ -329,6 +329,13 @@ def get_account_state():
         withdrawable_raw or 0
     )
 
+    log(
+        f"ACCOUNT DEBUG | "
+        f"accountValue={account_value} | "
+        f"withdrawable={available_usdc} | "
+        f"marginUsed={margin_used}"
+    )
+
     return {
         "account_value": account_value,
         "available_usdc": available_usdc,
