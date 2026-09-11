@@ -218,12 +218,20 @@ def round_btc(size):
 
 from hyperliquid.utils.signing import float_to_wire
 
+import math
+
 def round_spot_price(price, is_buy):
-    # float_to_wire tronca a 5 cifre significative e applica la divisibilità del tick size
-    formatted_str = float_to_wire(price)
+    # Il tick size per UBTC/USDC su Hyperliquid Spot richiede il passo di 0.1 (1 decimale)
+    # Per acquisti (BUY) arrotondiamo per difetto per rimanere aggressivi nei limiti ma sicuri.
+    # Per vendite (SELL) arrotondiamo per eccesso.
+    tick_size = 0.1
     
-    # Restituiamo il float pulito derivato direttamente dal formato wire di Hyperliquid
-    return float(formatted_str)
+    if is_buy:
+        rounded = math.floor(price / tick_size) * tick_size
+    else:
+        rounded = math.ceil(price / tick_size) * tick_size
+        
+    return round(rounded, 1)
 
 
 # ============================================================
