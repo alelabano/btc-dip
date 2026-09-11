@@ -228,6 +228,20 @@ def round_spot_price(price, is_buy):
         # Per un SELL arrotonda per eccesso all'intero più vicino
         return float(math.ceil(price))
 
+def get_24h_high_price():
+    end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    start_ms = end_ms - (24 * 60 * 60 * 1000)
+    
+    # Recupera le candele da 1 ora (1h) per la coppia spot
+    candles = info.candles_snapshot(SPOT_COIN, "1h", start_ms, end_ms)
+    
+    if not candles:
+        raise RuntimeError("Impossibile recuperare i dati OHLCv delle ultime 24 ore")
+    
+    # Estrae il massimo (tasti 'h' nell'oggetto candela)
+    high_24h = max(float(candle["h"]) for candle in candles)
+    return high_24h
+
 
 # ============================================================
 # SALDI SPOT
@@ -779,21 +793,20 @@ def check_sell(state):
 # ============================================================
 
 def check_buy(state, current_price):
-    reference = state.get("last_trade_price")
-
-    if reference is None:
-        log("NESSUN TRADE PRECEDENTE | primo acquisto per stabilire il riferimento.")
+    high_24h = get_24h_high_price()
+    
+    # Calcola la percentuale di ribasso rispetto al massimo a 24 ore
+    drop_percent = ((high_24h - current_price) / high_24h) * 100
+    
+    log(f"ANALISI 24H | Prezzo Corrente: ${current_price:.2f} | Max 24h: ${high_24h:.2f} | Ribasso: {drop_percent:.2f}%")
+    
+    # Dip_PERCENT impostato nel file .env (es. DIP_PERCENT=2)
+    if drop_percent >= DIP_PERCENT:
+        log(f"DIP 24H RILEVATO | Il prezzo è sceso del {drop_percent:.2f}% (>= {DIP_PERCENT:.2f}%) dal massimo 24h.")
         return place_buy(state)
-
-    change_percent = ((current_price - reference) / reference) * 100
-
-    log(f"VARIAZIONE DA ULTIMO TRADE | {change_percent:.4f}%")
-
-    if change_percent <= -DIP_PERCENT:
-        log(f"DIP SPOT RILEVATO | {change_percent:.4f}% <= -{DIP_PERCENT:.2f}%")
-        return place_buy(state)
-
+        
     return False
+
 
 
 # ============================================================
