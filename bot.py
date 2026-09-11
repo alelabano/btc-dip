@@ -21,12 +21,8 @@ load_dotenv()
 PRIVATE_KEY = os.getenv("HYPERLIQUID_PRIVATE_KEY")
 ACCOUNT_ADDRESS = os.getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 
-# CANDELE
-CANDLE_INTERVAL = os.getenv("CANDLE_INTERVAL", "4h")
-CANDLE_INTERVAL_MS = 4 * 60 * 60 * 1000
-
-# LOOP
-LOOP_INTERVAL_SECONDS = int(os.getenv("LOOP_INTERVAL_SECONDS", "60"))
+# LOOP: verifica ogni 4 ore, niente piu' candele
+LOOP_INTERVAL_SECONDS = int(os.getenv("LOOP_INTERVAL_SECONDS", "14400"))
 
 BUY_USD = float(os.getenv("BUY_USD", "10"))
 MAX_POSITION_USD = float(os.getenv("MAX_POSITION_USD", "200"))
@@ -134,11 +130,13 @@ def log(message):
 
 def default_state():
     return {
-        "version": 5,
+        "version": 8,
 
         "performance_start_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
 
-        "last_processed_candle": None,
+        # Prezzo dell'ultimo trade (buy o sell): riferimento per
+        # decidere il prossimo acquisto su dip.
+        "last_trade_price": None,
 
         "week_id": None,
         "weekly_buys": 0,
@@ -437,28 +435,6 @@ def verify_spot_position(state):
 
 
 # ============================================================
-# CANDELE 15M SPOT
-# ============================================================
-
-def get_closed_candles():
-    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-
-    start_ms = now_ms - (CANDLE_INTERVAL_MS * 10)
-
-    candles = info.candles_snapshot(SPOT_COIN, CANDLE_INTERVAL, start_ms, now_ms)
-
-    closed = []
-
-    for candle in candles:
-        if int(candle["T"]) <= now_ms:
-            closed.append(candle)
-
-    closed.sort(key=lambda x: int(x["T"]))
-
-    return closed
-
-
-# ============================================================
 # BUY SPOT
 # ============================================================
 
@@ -549,6 +525,9 @@ def place_buy(state):
     state["weekly_buys"] += 1
 
     state["last_buy"] = lot
+
+    # Riferimento per il prossimo giro: prezzo di questo acquisto.
+    state["last_trade_price"] = actual_price
 
     save_state(state)
 
@@ -671,6 +650,9 @@ def sell_lot(state, lot):
 
     state["last_sell"] = trade
 
+    # Riferimento per il prossimo giro: prezzo di questa vendita.
+    state["last_trade_price"] = sell_price
+
     save_state(state)
 
     log(
@@ -704,13 +686,16 @@ def check_sell(state):
 # BUY CHECK
 # ============================================================
 
-def check_buy(state, latest_close, previous_close):
-    if previous_close <= 0:
-        return False
+def check_buy(state, current_price):
+    reference = state.get("last_trade_price")
 
-    change_percent = ((latest_close - previous_close) / previous_close) * 100
+    if reference is None:
+        log("NESSUN TRADE PRECEDENTE | primo acquisto per stabilire il riferimento.")
+        return place_buy(state)
 
-    log(f"VARIAZIONE 4H SPOT | {change_percent:.4f}%")
+    change_percent = ((current_price - reference) / reference) * 100
+
+    log(f"VARIAZIONE DA ULTIMO TRADE | {change_percent:.4f}%")
 
     if change_percent <= -DIP_PERCENT:
         log(f"DIP SPOT RILEVATO | {change_percent:.4f}% <= -{DIP_PERCENT:.2f}%")
@@ -828,53 +813,9 @@ def run():
 
     verify_spot_position(state)
 
-    # --------------------------------------------------------
-    # CANDELE 15M SPOT
-    # --------------------------------------------------------
+    current_price = get_spot_price()
 
-    candles = get_closed_candles()
-
-    if len(candles) < 2:
-        log("Non ci sono abbastanza candele 15M Spot.")
-        return
-
-    latest = candles[-1]
-    previous = candles[-2]
-
-    latest_candle_time = int(latest["T"])
-
-    latest_close = float(latest["c"])
-
-    previous_close = float(previous["c"])
-
-    latest_datetime = datetime.fromtimestamp(latest_candle_time / 1000, tz=timezone.utc)
-
-    log(f"ULTIMA 15M SPOT CHIUSA | {latest_datetime}")
-
-    # --------------------------------------------------------
-    # EVITA DOPPIA ELABORAZIONE
-    # --------------------------------------------------------
-
-    if state.get("last_processed_candle") == latest_candle_time:
-        log("Candela già elaborata. Nessuna operazione.")
-
-        performance = calculate_performance(state)
-
-        log(
-            f"PERFORMANCE SPOT | "
-            f"USDC disponibile ${performance['usdc_available']:.4f} | "
-            f"BTC {performance['btc_size']:.8f} | "
-            f"valore BTC ${performance['btc_value']:.4f} | "
-            f"investito ${performance['open_cost']:.4f} | "
-            f"venduto ${performance['sold_notional']:.4f} | "
-            f"media acquisto ${performance['weighted_avg_price']:.2f} | "
-            f"realizzato ${performance['realized_net']:.4f} | "
-            f"unrealizzato ${performance['unrealized_gross']:.4f} | "
-            f"PnL totale ${performance['total_net_pnl']:.4f} | "
-            f"rendimento {performance['return_percent']:.2f}%"
-        )
-
-        return
+    log(f"PREZZO ATTUALE | ${current_price:.2f}")
 
     # --------------------------------------------------------
     # SELL PRIMA DEL BUY
@@ -883,11 +824,9 @@ def run():
     sold = check_sell(state)
 
     if sold:
-        state["last_processed_candle"] = latest_candle_time
+        log("SELL SPOT eseguito: nessun BUY in questo ciclo.")
 
-        save_state(state)
-
-        log("SELL SPOT eseguito: nessun BUY sulla stessa candela.")
+        verify_spot_position(state)
 
         log_capital()
 
@@ -897,22 +836,14 @@ def run():
     # BUY
     # --------------------------------------------------------
 
-    bought = check_buy(state, latest_close, previous_close)
+    bought = check_buy(state, current_price)
 
     if bought:
         log("BUY SPOT eseguito.")
     else:
         log("Nessun BUY SPOT.")
 
-    # --------------------------------------------------------
-    # CONTROLLO FINALE
-    # --------------------------------------------------------
-
     verify_spot_position(state)
-
-    state["last_processed_candle"] = latest_candle_time
-
-    save_state(state)
 
     log_capital()
 
