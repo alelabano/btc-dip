@@ -23,49 +23,47 @@ ACCOUNT_ADDRESS = os.getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 
 TOP_N_COINS = int(os.getenv("TOP_N_COINS", "25"))
 
+# Stablecoin e token sintetici/tracker di asset TradFi (azioni, indici,
+# materie prime) esclusi dalla selezione: non hanno senso in una
+# strategia dip-buy/take-profit pensata per cripto volatili.
+EXCLUDED_BASES = set(
+    b.strip().upper()
+    for b in os.getenv(
+        "EXCLUDED_BASES",
+        "USDT,USDT0,USDC,DAI,FEUSD,USDE,FRAX,USDP,TUSD,PYUSD,GUSD,STABLE,"
+        "RUB,EURC,EURT,XSGD,"
+        "QQQ,GLD,SPY,SLV,TLT,IWM,DIA,USO,UUUSPX,UUSPX"
+    ).split(",")
+    if b.strip()
+)
+
 BUY_USD = float(os.getenv("BUY_USD", "10"))
-MAX_POSITION_USD = float(
-    os.getenv("MAX_POSITION_USD", "200")
-)
-MAX_WEEKLY_BUYS = int(
-    os.getenv("MAX_WEEKLY_BUYS", "10")
-)
+MAX_POSITION_USD = float(os.getenv("MAX_POSITION_USD", "200"))
+MAX_WEEKLY_BUYS = int(os.getenv("MAX_WEEKLY_BUYS", "10"))
 
-DIP_PERCENT = float(
-    os.getenv("DIP_PERCENT", "2")
-)
-
+DIP_PERCENT = float(os.getenv("DIP_PERCENT", "2"))
 TAKE_PROFIT_PERCENT = float(
     os.getenv("TAKE_PROFIT_PERCENT", "4")
 )
 
-MAX_SLIPPAGE = float(
-    os.getenv("MAX_SLIPPAGE", "0.01")
+MAX_SLIPPAGE = float(os.getenv("MAX_SLIPPAGE", "0.01"))
+
+STATE_DIR = os.getenv("STATE_DIR", "/data")
+STATE_FILE = os.path.join(STATE_DIR, "state.json")
+
+STARTUP_DELAY = int(os.getenv("STARTUP_DELAY", "5"))
+POST_ORDER_DELAY = int(os.getenv("POST_ORDER_DELAY", "3"))
+
+FILL_CHECK_ATTEMPTS = int(
+    os.getenv("FILL_CHECK_ATTEMPTS", "5")
 )
 
-STATE_DIR = os.getenv(
-    "STATE_DIR",
-    "/data"
-)
-
-STATE_FILE = os.path.join(
-    STATE_DIR,
-    "state.json"
-)
-
-STARTUP_DELAY = int(
-    os.getenv("STARTUP_DELAY", "5")
-)
-
-POST_ORDER_DELAY = int(
-    os.getenv("POST_ORDER_DELAY", "3")
+FILL_CHECK_DELAY = float(
+    os.getenv("FILL_CHECK_DELAY", "1")
 )
 
 POSITION_TOLERANCE = float(
-    os.getenv(
-        "POSITION_TOLERANCE",
-        "0.00000001"
-    )
+    os.getenv("POSITION_TOLERANCE", "0.00000001")
 )
 
 CANDLE_INTERVAL = os.getenv(
@@ -74,10 +72,7 @@ CANDLE_INTERVAL = os.getenv(
 )
 
 LOOP_INTERVAL_SECONDS = int(
-    os.getenv(
-        "LOOP_INTERVAL_SECONDS",
-        "60"
-    )
+    os.getenv("LOOP_INTERVAL_SECONDS", "60")
 )
 
 
@@ -100,19 +95,17 @@ if not ACCOUNT_ADDRESS:
 # CONNESSIONE
 # ============================================================
 
-wallet = Account.from_key(
-    PRIVATE_KEY
-)
+wallet = Account.from_key(PRIVATE_KEY)
 
 info = Info(
     constants.MAINNET_API_URL,
-    skip_ws=True
+    skip_ws=True,
 )
 
 exchange = Exchange(
     wallet,
     constants.MAINNET_API_URL,
-    account_address=ACCOUNT_ADDRESS
+    account_address=ACCOUNT_ADDRESS,
 )
 
 
@@ -123,9 +116,7 @@ exchange = Exchange(
 def log(message):
     now = datetime.now(
         timezone.utc
-    ).strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
+    ).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     print(
         f"[{now}] {message}",
@@ -141,26 +132,11 @@ def get_spot_metadata():
     return info.spot_meta_and_asset_ctxs()
 
 
-def get_all_spot_markets():
+def resolve_active_coins():
     meta, contexts = get_spot_metadata()
 
-    tokens = meta.get(
-        "tokens",
-        []
-    )
-
-    universe = meta.get(
-        "universe",
-        []
-    )
-
-    token_by_index = {}
-
-    for token in tokens:
-        index = token.get("index")
-
-        if index is not None:
-            token_by_index[index] = token
+    tokens = meta.get("tokens", [])
+    universe = meta.get("universe", [])
 
     usdc_index = None
 
@@ -174,10 +150,9 @@ def get_all_spot_markets():
             "Token USDC non trovato nei metadata Spot."
         )
 
-    markets = {}
+    candidates = []
 
     for index, market in enumerate(universe):
-
         market_tokens = market.get(
             "tokens",
             []
@@ -195,113 +170,91 @@ def get_all_spot_markets():
         if index >= len(contexts):
             continue
 
-        if not market.get(
-            "isCanonical",
-            False
-        ):
-            continue
+        base_token = None
 
-        base_token = token_by_index.get(
-            base_index
-        )
+        for token in tokens:
+            if token.get("index") == base_index:
+                base_token = token
+                break
 
         if base_token is None:
             continue
 
-        base_name = base_token.get(
-            "name"
-        )
+        base_name = base_token.get("name")
 
-        if not base_name:
+        if not base_name or base_name == "USDC":
             continue
 
-        if base_name == "USDC":
+        if base_name.upper() in EXCLUDED_BASES:
             continue
-
-        symbol = market.get(
-            "name"
-        )
-
-        if not symbol:
-            continue
-
-        context = contexts[index]
 
         volume = float(
-            context.get(
+            contexts[index].get(
                 "dayNtlVlm",
                 0
             ) or 0
         )
 
-        mid_price = context.get(
+        mid_price = contexts[index].get(
             "midPx"
         )
 
         if mid_price is None:
             continue
 
-        markets[symbol] = {
-            "symbol": symbol,
-            "base": base_name,
-            "decimals": int(
-                base_token.get(
-                    "szDecimals",
-                    0
-                )
-            ),
-            "volume": volume,
-        }
+        symbol = market.get("name")
 
-    return markets
+        if not symbol:
+            continue
 
+        candidates.append(
+            {
+                "symbol": symbol,
+                "base": base_name,
+                "decimals": int(
+                    base_token.get(
+                        "szDecimals",
+                        0
+                    )
+                ),
+                "volume": volume,
+            }
+        )
 
-def resolve_active_coins(state):
-    all_markets = get_all_spot_markets()
-
-    sorted_markets = sorted(
-        all_markets.values(),
+    candidates.sort(
         key=lambda item: item["volume"],
         reverse=True
     )
 
-    selected = sorted_markets[
-        :TOP_N_COINS
-    ]
+    selected = candidates[:TOP_N_COINS]
+
+    if not selected:
+        raise RuntimeError(
+            "Nessuna coppia Spot/USDC disponibile."
+        )
 
     markets = {}
 
-    for market in selected:
-        markets[
-            market["symbol"]
-        ] = market
-
-    # Mantiene sotto gestione anche eventuali coin
-    # che sono uscite dalla Top N ma hanno ancora lotti aperti.
-    for symbol, coin_state in state.get(
-        "coins",
-        {}
-    ).items():
-
-        open_lots = coin_state.get(
-            "open_lots",
-            []
-        )
-
-        if not open_lots:
-            continue
-
-        if symbol in all_markets:
-            markets[symbol] = (
-                all_markets[symbol]
-            )
+    for item in selected:
+        markets[item["symbol"]] = {
+            "base": item["base"],
+            "decimals": item["decimals"],
+            "volume": item["volume"],
+        }
 
     log(
         f"COIN ATTIVE: {len(markets)} | "
-        f"{[item['base'] for item in markets.values()]}"
+        f"{[item['base'] for item in selected]}"
     )
 
     return markets
+
+
+MARKETS = resolve_active_coins()
+
+ACTIVE_SYMBOLS = list(
+    MARKETS.keys()
+)
 
 
 # ============================================================
@@ -322,7 +275,7 @@ def default_coin_state():
 
 def default_state():
     return {
-        "version": 8,
+        "version": 7,
         "week_id": None,
         "coins": {},
     }
@@ -364,13 +317,10 @@ def load_state():
         state = json.load(file)
 
     version = int(
-        state.get(
-            "version",
-            0
-        )
+        state.get("version", 0)
     )
 
-    if version < 8:
+    if version < 7:
         raise RuntimeError(
             "STATE FILE OBSOLETO. "
             "Il file /data/state.json appartiene "
@@ -475,7 +425,6 @@ def get_balances_all():
         "balances",
         []
     ):
-
         coin = str(
             balance.get(
                 "coin",
@@ -530,19 +479,18 @@ def get_coin_balance(
         }
     )
 
-    total = float(
-        balance["total"]
-    )
-
-    hold = float(
-        balance["hold"]
-    )
-
     return {
-        "total": total,
+        "total": float(
+            balance["total"]
+        ),
         "available": max(
             0.0,
-            total - hold
+            float(
+                balance["total"]
+            )
+            - float(
+                balance["hold"]
+            )
         ),
     }
 
@@ -551,7 +499,7 @@ def get_coin_balance(
 # PREZZI SPOT
 # ============================================================
 
-def get_prices_all(markets):
+def get_prices_all():
     meta, contexts = (
         get_spot_metadata()
     )
@@ -564,13 +512,12 @@ def get_prices_all(markets):
             []
         )
     ):
-
         symbol = market.get(
             "name"
         )
 
         if (
-            symbol not in markets
+            symbol not in MARKETS
             or index >= len(contexts)
         ):
             continue
@@ -604,11 +551,9 @@ def get_spot_order_price(
         coin
     ]
 
-    decimals = (
-        info.asset_to_sz_decimals[
-            asset
-        ]
-    )
+    decimals = info.asset_to_sz_decimals[
+        asset
+    ]
 
     book = info.l2_snapshot(
         symbol
@@ -628,7 +573,6 @@ def get_spot_order_price(
     asks = levels[1]
 
     if is_buy:
-
         if not asks:
             raise RuntimeError(
                 f"Ask {symbol} non disponibile."
@@ -644,7 +588,6 @@ def get_spot_order_price(
         )
 
     else:
-
         if not bids:
             raise RuntimeError(
                 f"Bid {symbol} non disponibile."
@@ -659,6 +602,8 @@ def get_spot_order_price(
             * (1.0 - slippage)
         )
 
+    # Stessa logica di precisione usata
+    # dall'SDK Hyperliquid per gli ordini Spot.
     precision = max(
         0,
         8 - decimals
@@ -674,10 +619,9 @@ def get_spot_order_price(
 
 def round_size(
     symbol,
-    size,
-    markets
+    size
 ):
-    decimals = markets[
+    decimals = MARKETS[
         symbol
     ]["decimals"]
 
@@ -694,13 +638,11 @@ def round_size(
 def spot_order(
     symbol,
     is_buy,
-    size,
-    markets
+    size
 ):
     size = round_size(
         symbol,
-        size,
-        markets
+        size
     )
 
     if size <= 0:
@@ -746,18 +688,22 @@ def spot_order(
 
 
 # ============================================================
-# LETTURA FILL
+# LETTURA FILL DALLA RISPOSTA DELL'ORDINE
 # ============================================================
 
-def extract_order_fill(result):
+def extract_order_fill(
+    result
+):
     try:
-        statuses = result[
-            "response"
-        ][
-            "data"
-        ][
-            "statuses"
-        ]
+        statuses = (
+            result[
+                "response"
+            ][
+                "data"
+            ][
+                "statuses"
+            ]
+        )
     except (
         KeyError,
         TypeError
@@ -767,7 +713,6 @@ def extract_order_fill(result):
     for status in statuses:
 
         if "filled" in status:
-
             filled = status[
                 "filled"
             ]
@@ -844,15 +789,13 @@ def estimate_fee(
 def verify_position(
     state,
     symbol,
-    balances,
-    markets
+    balances
 ):
-    coin_state = get_coin_state(
-        state,
-        symbol
-    )
+    coin_state = state[
+        "coins"
+    ][symbol]
 
-    base = markets[
+    base = MARKETS[
         symbol
     ]["base"]
 
@@ -918,7 +861,7 @@ def get_candle_interval_ms():
 
     if CANDLE_INTERVAL not in mapping:
         raise RuntimeError(
-            "Intervallo candela non supportato: "
+            f"Intervallo candela non supportato: "
             f"{CANDLE_INTERVAL}"
         )
 
@@ -980,15 +923,13 @@ def place_buy(
     state,
     symbol,
     current_price,
-    balances,
-    markets
+    balances
 ):
-    coin_state = get_coin_state(
-        state,
-        symbol
-    )
+    coin_state = state[
+        "coins"
+    ][symbol]
 
-    base = markets[
+    base = MARKETS[
         symbol
     ]["base"]
 
@@ -1009,8 +950,7 @@ def place_buy(
     ):
         log(
             f"BUY BLOCCATO {symbol} | "
-            f"posizione "
-            f"${current_position_value:.2f} | "
+            f"posizione ${current_position_value:.2f} | "
             f"BUY ${BUY_USD:.2f} | "
             f"MAX ${MAX_POSITION_USD:.2f}"
         )
@@ -1042,7 +982,7 @@ def place_buy(
         )
         return False
 
-    decimals = markets[
+    decimals = MARKETS[
         symbol
     ]["decimals"]
 
@@ -1057,8 +997,7 @@ def place_buy(
     result = spot_order(
         symbol,
         True,
-        buy_size,
-        markets
+        buy_size
     )
 
     if POST_ORDER_DELAY > 0:
@@ -1140,10 +1079,9 @@ def place_buy(
         f"{symbol} | "
         f"lotto #{lot['id']} | "
         f"{actual_size:.8f} | "
-        f"${actual_price:.8f} | "
-        f"investiti "
-        f"${actual_notional:.4f} | "
-        f"TP ${target_price:.8f}"
+        f"${actual_price:.2f} | "
+        f"investiti ${actual_notional:.4f} | "
+        f"TP ${target_price:.2f}"
     )
 
     return True
@@ -1158,10 +1096,9 @@ def get_sellable_lots(
     symbol,
     current_price
 ):
-    coin_state = get_coin_state(
-        state,
-        symbol
-    )
+    coin_state = state[
+        "coins"
+    ][symbol]
 
     eligible = []
 
@@ -1171,28 +1108,23 @@ def get_sellable_lots(
         ],
         key=lambda item: item["id"]
     ):
-
-        remaining = float(
-            lot[
-                "remaining_size"
-            ]
-        )
-
         if (
-            remaining
+            float(
+                lot[
+                    "remaining_size"
+                ]
+            )
             <= POSITION_TOLERANCE
         ):
             continue
 
-        target_price = float(
-            lot[
-                "target_price"
-            ]
-        )
-
         if (
             current_price
-            >= target_price
+            >= float(
+                lot[
+                    "target_price"
+                ]
+            )
         ):
             eligible.append(
                 lot
@@ -1210,15 +1142,13 @@ def sell_lot(
     symbol,
     lot,
     current_price,
-    balances,
-    markets
+    balances
 ):
-    coin_state = get_coin_state(
-        state,
-        symbol
-    )
+    coin_state = state[
+        "coins"
+    ][symbol]
 
-    base = markets[
+    base = MARKETS[
         symbol
     ]["base"]
 
@@ -1226,8 +1156,7 @@ def sell_lot(
         symbol,
         lot[
             "remaining_size"
-        ],
-        markets
+        ]
     )
 
     if sell_size <= 0:
@@ -1235,11 +1164,9 @@ def sell_lot(
 
     if (
         current_price
-        < float(
-            lot[
-                "target_price"
-            ]
-        )
+        < lot[
+            "target_price"
+        ]
     ):
         return False
 
@@ -1263,15 +1190,13 @@ def sell_lot(
         f"{symbol} | "
         f"lotto #{lot['id']} | "
         f"{sell_size:.8f} | "
-        f"target "
-        f"${lot['target_price']:.8f}"
+        f"target ${lot['target_price']:.2f}"
     )
 
     result = spot_order(
         symbol,
         False,
-        sell_size,
-        markets
+        sell_size
     )
 
     if POST_ORDER_DELAY > 0:
@@ -1386,7 +1311,7 @@ def sell_lot(
         f"{symbol} | "
         f"lotto #{lot['id']} | "
         f"{sold_size:.8f} | "
-        f"${sell_price:.8f} | "
+        f"${sell_price:.2f} | "
         f"PnL netto stimato "
         f"${net_pnl:.4f}"
     )
@@ -1402,8 +1327,7 @@ def check_sell(
     state,
     symbol,
     current_price,
-    balances,
-    markets
+    balances
 ):
     eligible = get_sellable_lots(
         state,
@@ -1414,8 +1338,7 @@ def check_sell(
     if not eligible:
         return False
 
-    # FIFO:
-    # un solo lotto venduto per ciclo
+    # FIFO: un solo lotto per ciclo
     lot = eligible[0]
 
     return sell_lot(
@@ -1423,8 +1346,7 @@ def check_sell(
         symbol,
         lot,
         current_price,
-        balances,
-        markets
+        balances
     )
 
 
@@ -1438,8 +1360,7 @@ def check_buy(
     latest_close,
     previous_close,
     current_price,
-    balances,
-    markets
+    balances
 ):
     if previous_close <= 0:
         return False
@@ -1457,7 +1378,6 @@ def check_buy(
         change_percent
         <= -DIP_PERCENT
     ):
-
         log(
             f"DIP {symbol} | "
             f"{change_percent:.4f}% | "
@@ -1469,8 +1389,7 @@ def check_buy(
             state,
             symbol,
             current_price,
-            balances,
-            markets
+            balances
         )
 
     return False
@@ -1484,7 +1403,7 @@ def process_coin(
     state,
     symbol,
     prices,
-    markets
+    balances
 ):
     current_price = prices.get(
         symbol
@@ -1499,61 +1418,49 @@ def process_coin(
     )
 
     # --------------------------------------------------------
-    # SALDI AGGIORNATI
-    # --------------------------------------------------------
-
-    balances = get_balances_all()
-
-    # --------------------------------------------------------
-    # CONTROLLO POSIZIONE REALE
+    # SELL: controllato OGNI ciclo, indipendentemente
+    # dal cambio della candela.
     # --------------------------------------------------------
 
     verify_position(
         state,
         symbol,
-        balances,
-        markets
+        balances
     )
-
-    # --------------------------------------------------------
-    # SELL
-    #
-    # Viene controllato OGNI CICLO.
-    # Non dipende dalla nuova candela.
-    # --------------------------------------------------------
 
     sold = check_sell(
         state,
         symbol,
         current_price,
-        balances,
-        markets
+        balances
     )
 
     if sold:
-
+        # Dopo il SELL ricontrolliamo il saldo reale e aggiorniamo
+        # il dizionario condiviso, cosi' le coin successive in questo
+        # stesso ciclo vedono USDC disponibile aggiornato.
         fresh_balances = (
             get_balances_all()
+        )
+
+        balances.update(
+            fresh_balances
         )
 
         verify_position(
             state,
             symbol,
-            fresh_balances,
-            markets
+            fresh_balances
         )
 
         save_state(state)
 
-        # Non compra nello stesso ciclo
-        # in cui ha venduto.
+        # Un SELL chiude questo ciclo per la coin:
+        # nessun BUY nello stesso ciclo.
         return
 
     # --------------------------------------------------------
-    # BUY
-    #
-    # Viene controllato una sola volta
-    # per ogni nuova candela chiusa.
+    # BUY: solo una volta per candela chiusa.
     # --------------------------------------------------------
 
     candles = get_closed_candles(
@@ -1586,33 +1493,30 @@ def process_coin(
     ):
         return
 
-    # Aggiorniamo il saldo prima del BUY
-    # per evitare di usare uno snapshot vecchio.
-    fresh_balances = (
-        get_balances_all()
-    )
-
     bought = check_buy(
         state,
         symbol,
         latest_close,
         previous_close,
         current_price,
-        fresh_balances,
-        markets
+        balances
     )
 
     if bought:
-
+        # Aggiorna il dizionario condiviso: le coin successive in
+        # questo ciclo devono vedere l'USDC realmente rimasto.
         fresh_balances = (
             get_balances_all()
+        )
+
+        balances.update(
+            fresh_balances
         )
 
         verify_position(
             state,
             symbol,
-            fresh_balances,
-            markets
+            fresh_balances
         )
 
     coin_state[
@@ -1628,8 +1532,7 @@ def process_coin(
 
 def log_portfolio(
     balances,
-    prices,
-    markets
+    prices
 ):
     total_value = (
         balances[
@@ -1639,11 +1542,11 @@ def log_portfolio(
 
     positions = []
 
-    for symbol, market in markets.items():
+    for symbol in ACTIVE_SYMBOLS:
 
-        base = market[
-            "base"
-        ]
+        base = MARKETS[
+            symbol
+        ]["base"]
 
         balance = get_coin_balance(
             balances,
@@ -1685,8 +1588,7 @@ def log_portfolio(
 
     log(
         f"PORTAFOGLIO | "
-        f"USDC "
-        f"${balances['usdc_available']:.2f} | "
+        f"USDC ${balances['usdc_available']:.2f} | "
         f"{position_text} | "
         f"totale ~${total_value:.2f}"
     )
@@ -1703,15 +1605,6 @@ def run():
         state
     )
 
-    markets = resolve_active_coins(
-        state
-    )
-
-    if not markets:
-        raise RuntimeError(
-            "Nessuna coin Spot/USDC disponibile."
-        )
-
     log("=" * 60)
 
     log(
@@ -1720,7 +1613,7 @@ def run():
     )
 
     log(
-        f"COIN={len(markets)} | "
+        f"COIN={len(ACTIVE_SYMBOLS)} | "
         f"BUY=${BUY_USD:.2f} | "
         f"DIP={DIP_PERCENT:.2f}% | "
         f"TP={TAKE_PROFIT_PERCENT:.2f}% | "
@@ -1731,28 +1624,24 @@ def run():
 
     balances = get_balances_all()
 
-    prices = get_prices_all(
-        markets
-    )
+    prices = get_prices_all()
 
     log_portfolio(
         balances,
-        prices,
-        markets
+        prices
     )
 
-    for symbol in markets:
+    for symbol in ACTIVE_SYMBOLS:
 
         try:
             process_coin(
                 state,
                 symbol,
                 prices,
-                markets
+                balances
             )
 
         except Exception as error:
-
             log(
                 f"ERRORE {symbol} | "
                 f"{error}"
