@@ -156,12 +156,6 @@ def resolve_active_coins():
         if index >= len(contexts):
             continue
 
-        if not market.get(
-            "isCanonical",
-            False
-        ):
-            continue
-
         base_token = None
 
         for token in tokens:
