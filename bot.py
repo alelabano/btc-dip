@@ -216,28 +216,14 @@ def round_btc(size):
     return round(float(size), decimals)
 
 
-def get_spot_price_decimals():
-    meta = info.spot_meta()
-    for universe in meta.get("universe", []):
-        if universe.get("name") == SPOT_COIN:
-            # Recupera i decimali di prezzo specifici del mercato se presenti, 
-            # altrimenti imposta il valore standard per BTC/USDC (2 decimali)
-            return universe.get("priceDecimals", 2)
-    return 2
-
+from hyperliquid.utils.signing import float_to_wire
 
 def round_spot_price(price, is_buy):
-    decimals = get_spot_price_decimals()
-    quantum = Decimal("1").scaleb(-decimals)
-    value = Decimal(str(price))
-
-    # For a BUY, round down so the IOC limit cannot become
-    # more aggressive than the calculated maximum price.
-    # For a SELL, round up so the IOC limit cannot become
-    # less favorable than the calculated minimum price.
-    rounding = ROUND_DOWN if is_buy else ROUND_UP
-
-    return float(value.quantize(quantum, rounding=rounding))
+    # float_to_wire tronca a 5 cifre significative e applica la divisibilità del tick size
+    formatted_str = float_to_wire(price)
+    
+    # Restituiamo il float pulito derivato direttamente dal formato wire di Hyperliquid
+    return float(formatted_str)
 
 
 # ============================================================
