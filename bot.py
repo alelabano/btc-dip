@@ -289,6 +289,8 @@ def get_account_state():
     user_state = info.user_state(
         ACCOUNT_ADDRESS
     )
+    
+    log(f"ACCOUNT RAW | {user_state}")
 
     margin_summary = user_state.get(
         "marginSummary",
