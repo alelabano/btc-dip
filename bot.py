@@ -2,6 +2,7 @@ import json
 import os
 import time
 import traceback
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -215,6 +216,27 @@ def round_btc(size):
     return round(float(size), decimals)
 
 
+def get_spot_price_decimals():
+    # Hyperliquid Spot: price decimals are derived from
+    # 8 - szDecimals, subject to the asset's significant-digit rule.
+    sz_decimals = get_spot_decimals()
+    return max(0, 8 - sz_decimals)
+
+
+def round_spot_price(price, is_buy):
+    decimals = get_spot_price_decimals()
+    quantum = Decimal("1").scaleb(-decimals)
+    value = Decimal(str(price))
+
+    # For a BUY, round down so the IOC limit cannot become
+    # more aggressive than the calculated maximum price.
+    # For a SELL, round up so the IOC limit cannot become
+    # less favorable than the calculated minimum price.
+    rounding = ROUND_DOWN if is_buy else ROUND_UP
+
+    return float(value.quantize(quantum, rounding=rounding))
+
+
 # ============================================================
 # SALDI SPOT
 # ============================================================
@@ -316,10 +338,19 @@ def get_spot_execution_price(is_buy, slippage):
 
 
 def spot_market_order(is_buy, size):
-    price = get_spot_execution_price(is_buy, MAX_SLIPPAGE)
+    raw_price = get_spot_execution_price(is_buy, MAX_SLIPPAGE)
+    price = round_spot_price(raw_price, is_buy)
 
-    # prezzo con precisione sufficiente
-    price = float(f"{price:.8f}")
+    if price <= 0:
+        raise RuntimeError(f"Prezzo Spot non valido: {price}")
+
+    notional = float(size) * price
+
+    if notional > 500000:
+        raise RuntimeError(
+            f"Ordine Spot bloccato: controvalore ${notional:.2f} "
+            f"> limite Hyperliquid $500000."
+        )
 
     log(
         f"ORDINE SPOT | "
@@ -341,6 +372,23 @@ def spot_market_order(is_buy, size):
     )
 
     log(f"ORDINE SPOT RISPOSTA | {result}")
+
+    if result.get("status") != "ok":
+        raise RuntimeError(
+            f"Ordine Spot rifiutato: {result}"
+        )
+
+    statuses = (
+        result.get("response", {})
+        .get("data", {})
+        .get("statuses", [])
+    )
+
+    for status in statuses:
+        if "error" in status:
+            raise RuntimeError(
+                f"Ordine Spot rifiutato: {status['error']}"
+            )
 
     return result
 
@@ -397,6 +445,39 @@ def calculate_fill(fills, is_buy):
         "price": total_notional / total_size,
         "notional": total_notional
     }
+
+
+def extract_order_fill(result):
+    try:
+        statuses = result["response"]["data"]["statuses"]
+    except (KeyError, TypeError):
+        return None
+
+    for status in statuses:
+        if "filled" in status:
+            filled = status["filled"]
+
+            size = float(
+                filled.get("totalSz", 0) or 0
+            )
+            price = float(
+                filled.get("avgPx", 0) or 0
+            )
+
+            if size > 0 and price > 0:
+                return {
+                    "size": size,
+                    "price": price,
+                    "notional": size * price,
+                    "oid": filled.get("oid"),
+                }
+
+        if "error" in status:
+            raise RuntimeError(
+                f"Ordine Spot rifiutato: {status['error']}"
+            )
+
+    return None
 
 
 # ============================================================
@@ -481,6 +562,11 @@ def place_buy(state):
         return False
 
     # size indicativa
+    if current_price <= 0:
+        raise RuntimeError(
+            f"Prezzo BTC Spot non valido per il BUY: {current_price}"
+        )
+
     buy_size = BUY_USD / current_price
     buy_size = round_btc(buy_size)
 
@@ -495,21 +581,22 @@ def place_buy(state):
     if result.get("status") != "ok":
         raise RuntimeError(f"BUY SPOT rifiutato: {result}")
 
-    time.sleep(POST_ORDER_DELAY)
-
-    fill = None
-
-    for _ in range(FILL_CHECK_ATTEMPTS):
-        fills = get_spot_fills_since(order_start_ms - 2000)
-        fill = calculate_fill(fills, True)
-
-        if fill:
-            break
-
-        time.sleep(FILL_CHECK_DELAY)
+    fill = extract_order_fill(result)
 
     if not fill:
-        raise RuntimeError("BUY inviato ma fill Spot non rilevato.")
+        time.sleep(POST_ORDER_DELAY)
+
+        for _ in range(FILL_CHECK_ATTEMPTS):
+            fills = get_spot_fills_since(order_start_ms - 2000)
+            fill = calculate_fill(fills, True)
+
+            if fill:
+                break
+
+            time.sleep(FILL_CHECK_DELAY)
+
+    if not fill:
+        raise RuntimeError("BUY IOC eseguito senza fill Spot rilevato.")
 
     actual_size = fill["size"]
     actual_price = fill["price"]
@@ -609,21 +696,22 @@ def sell_lot(state, lot):
     if result.get("status") != "ok":
         raise RuntimeError(f"SELL SPOT rifiutato: {result}")
 
-    time.sleep(POST_ORDER_DELAY)
-
-    fill = None
-
-    for _ in range(FILL_CHECK_ATTEMPTS):
-        fills = get_spot_fills_since(order_start_ms - 2000)
-        fill = calculate_fill(fills, False)
-
-        if fill:
-            break
-
-        time.sleep(FILL_CHECK_DELAY)
+    fill = extract_order_fill(result)
 
     if not fill:
-        raise RuntimeError("SELL inviato ma fill Spot non rilevato.")
+        time.sleep(POST_ORDER_DELAY)
+
+        for _ in range(FILL_CHECK_ATTEMPTS):
+            fills = get_spot_fills_since(order_start_ms - 2000)
+            fill = calculate_fill(fills, False)
+
+            if fill:
+                break
+
+            time.sleep(FILL_CHECK_DELAY)
+
+    if not fill:
+        raise RuntimeError("SELL IOC eseguito senza fill Spot rilevato.")
 
     sold_size = min(fill["size"], lot["remaining_size"])
 
