@@ -81,19 +81,38 @@ exchange = Exchange(wallet, constants.MAINNET_API_URL, account_address=ACCOUNT_A
 def resolve_spot_coin():
     meta = info.spot_meta()
 
-    names = [market.get("name") for market in meta["universe"]]
+    base_token_idx = None
+    base_name = None
+    quote_token_idx = None
+
+    for idx, token in enumerate(meta["tokens"]):
+        name = token.get("name")
+
+        if name in ("UBTC", "BTC") and base_token_idx is None:
+            base_token_idx = idx
+            base_name = name
+
+        if name == "USDC" and quote_token_idx is None:
+            quote_token_idx = idx
+
+    if base_token_idx is None:
+        token_names = [t.get("name") for t in meta["tokens"]]
+        print(f"DEBUG TOKENS DISPONIBILI | {token_names}", flush=True)
+        raise RuntimeError("Nessun token BTC/UBTC trovato nei metadata Spot")
+
+    if quote_token_idx is None:
+        raise RuntimeError("Nessun token USDC trovato nei metadata Spot")
 
     for market in meta["universe"]:
-        if market.get("name") in ("UBTC/USDC", "BTC/USDC"):
-            return market["name"]
+        tokens = market.get("tokens", [])
 
-    print(f"DEBUG COPPIE SPOT DISPONIBILI | {names}", flush=True)
+        if len(tokens) == 2 and tokens[0] == base_token_idx and tokens[1] == quote_token_idx:
+            return market["name"], base_name
 
-    raise RuntimeError("Coppia spot BTC/USDC (o UBTC/USDC) non trovata nei metadata Hyperliquid")
+    raise RuntimeError(f"Nessun mercato spot {base_name}/USDC trovato nei metadata Hyperliquid")
 
 
-SPOT_COIN = resolve_spot_coin()
-BASE_COIN = SPOT_COIN.split("/")[0]
+SPOT_COIN, BASE_COIN = resolve_spot_coin()
 
 
 # ============================================================
