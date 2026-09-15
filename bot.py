@@ -818,8 +818,6 @@ def calculate_performance(state):
 
     current_price = get_spot_price()
 
-    btc_value = balances["btc_total"] * current_price
-
     open_cost = 0.0
     open_size = 0.0
     open_buy_fees = 0.0
@@ -833,6 +831,12 @@ def calculate_performance(state):
 
         if lot["buy_size"] > 0:
             open_buy_fees += float(lot["buy_fee"]) * (size / float(lot["buy_size"]))
+
+    # Il valore BTC usato nel PnL si basa solo sui lotti tracciati
+    # (open_size), non sul saldo reale totale: eventuale BTC non
+    # tracciato (dust residuo, arrotondamenti) non deve comparire
+    # come profitto gratuito nel rendimento.
+    btc_value = open_size * current_price
 
     closed_buy_cost = sum(float(trade["buy_cost_allocated"]) for trade in state["sell_trades"])
 
