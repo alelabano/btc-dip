@@ -25,7 +25,7 @@ ACCOUNT_ADDRESS = os.getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 # LOOP: verifica ogni 4 ore, niente piu' candele
 LOOP_INTERVAL_SECONDS = int(os.getenv("LOOP_INTERVAL_SECONDS", "14400"))
 
-BUY_USD = float(os.getenv("BUY_USD", "10"))
+BUY_USD = float(os.getenv("BUY_USD", "12"))
 MAX_POSITION_USD = float(os.getenv("MAX_POSITION_USD", "200"))
 MAX_WEEKLY_BUYS = int(os.getenv("MAX_WEEKLY_BUYS", "10"))
 
@@ -48,6 +48,9 @@ FILL_CHECK_ATTEMPTS = int(os.getenv("FILL_CHECK_ATTEMPTS", "5"))
 FILL_CHECK_DELAY = float(os.getenv("FILL_CHECK_DELAY", "1"))
 
 POSITION_TOLERANCE = float(os.getenv("POSITION_TOLERANCE", "0.00003"))
+
+# Percentuale del lotto venduta al raggiungimento del target
+SELL_PERCENT = float(os.getenv("SELL_PERCENT", "95"))
 
 
 # ============================================================
@@ -672,7 +675,7 @@ def get_sellable_lots(state):
 # ============================================================
 
 def sell_lot(state, lot):
-    sell_size = round_btc(lot["remaining_size"])
+    sell_size = round_btc(lot["remaining_size"] * SELL_PERCENT / 100)
 
     if sell_size <= 0:
         return False
@@ -751,7 +754,7 @@ def sell_lot(state, lot):
 
     state["sell_trades"].append(trade)
 
-    if lot["remaining_size"] <= POSITION_TOLERANCE:
+    if lot["remaining_size"] <= 0:
         state["open_lots"].remove(lot)
 
     state["last_sell"] = trade
