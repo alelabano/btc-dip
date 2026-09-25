@@ -826,17 +826,31 @@ def check_sell(state):
 # BUY CHECK
 # ============================================================
 
+def get_buy_reference(state):
+    # Primo lotto: riferimento massimo 24h.
+    # Dal secondo lotto in poi: riferimento il lotto col prezzo di acquisto piu' basso
+    # (esclusi i lotti residui, che non sono acquisti diretti).
+    open_lots = [lot for lot in state["open_lots"] if not lot.get("residual")]
+
+    if not open_lots:
+        return get_24h_high_price(), "24H"
+
+    lowest = min(lot["buy_price"] for lot in open_lots)
+
+    return lowest, "LOTTO"
+
+
 def check_buy(state, current_price):
-    high_24h = get_24h_high_price()
+    reference, ref_type = get_buy_reference(state)
+
+    # Calcola la percentuale di ribasso rispetto al riferimento (max 24h o lotto piu' basso)
+    drop_percent = ((reference - current_price) / reference) * 100
     
-    # Calcola la percentuale di ribasso rispetto al massimo a 24 ore
-    drop_percent = ((high_24h - current_price) / high_24h) * 100
-    
-    log(f"ANALISI 24H | Prezzo Corrente: ${current_price:.2f} | Max 24h: ${high_24h:.2f} | Ribasso: {drop_percent:.2f}%")
+    log(f"ANALISI {ref_type} | Prezzo Corrente: ${current_price:.2f} | Riferimento: ${reference:.2f} | Ribasso: {drop_percent:.2f}%")
     
     # Dip_PERCENT impostato nel file .env (es. DIP_PERCENT=2)
     if drop_percent >= DIP_PERCENT:
-        log(f"DIP 24H RILEVATO | Il prezzo è sceso del {drop_percent:.2f}% (>= {DIP_PERCENT:.2f}%) dal massimo 24h.")
+        log(f"DIP RILEVATO | Il prezzo è sceso del {drop_percent:.2f}% (>= {DIP_PERCENT:.2f}%) dal riferimento.")
         return place_buy(state)
         
     return False
